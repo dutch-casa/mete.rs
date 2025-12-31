@@ -1,0 +1,29 @@
+[package]
+name = "mete"
+version = "0.1.0"
+edition = "2021"
+description = "Structural metrics engine for code quality analysis"
+
+[[bin]]
+name = "mete"
+path = "src/main.rs"
+
+[lib]
+name = "mete"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+glob = "0.3"
+tree-sitter = "0.24.0"
+tree-sitter-rust = "0.23.0"
+tree-sitter-typescript = "0.23.0"
+tree-sitter-python = "0.23.0"
+tree-sitter-go = "0.23.0"
+tree-sitter-java = "0.23.0"
+tree-sitter-c-sharp = "0.23.0"
+tree-sitter-javascript = "0.23.0"
+tree-sitter-cpp = "0.23.0"
+tree-sitter-elixir = "0.3.4"
