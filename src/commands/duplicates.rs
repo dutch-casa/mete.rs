@@ -1,6 +1,5 @@
 use colored::*;
 use mete::{AnalysisService, AnalyzeRequest, WantFlags};
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -48,7 +47,7 @@ pub fn run_duplicates(
 fn analyze_file(
     path: &Path,
     language: Option<&str>,
-    verbose: bool,
+    _verbose: bool,
     quiet: bool,
 ) -> Vec<DuplicateResult> {
     let mut results: Vec<DuplicateResult> = Vec::new();

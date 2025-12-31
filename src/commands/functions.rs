@@ -54,7 +54,7 @@ pub fn run_functions(
 fn analyze_file(
     path: &Path,
     language: Option<&str>,
-    verbose: bool,
+    _verbose: bool,
     quiet: bool,
 ) -> Vec<FunctionResult> {
     let mut results: Vec<FunctionResult> = Vec::new();
@@ -268,7 +268,7 @@ fn sort_functions(
     sorted
 }
 
-fn display_results(results: &[FunctionResult], format: &str, verbose: bool, quiet: bool) {
+fn display_results(results: &[FunctionResult], format: &str, _verbose: bool, quiet: bool) {
     if quiet {
         return;
     }

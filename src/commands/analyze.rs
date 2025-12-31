@@ -518,7 +518,7 @@ fn display_summary_row(aggs: &Aggregates) {
 
     let mi_formatted = colorize(&mi_colored, mi_color);
     let cc_formatted = colorize(&cc_colored, cc_color);
-    let depth_formatted = colorize(&depth_colored, depth_color);
+    let _depth_formatted = colorize(&depth_colored, depth_color);
 
     println!(
         "{}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}",
