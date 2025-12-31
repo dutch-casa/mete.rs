@@ -54,14 +54,14 @@ let response = AnalysisService::analyze(request)?;
 pub mod domain;
 pub mod infrastructure;
 
+pub use domain::primitives::DomainError;
+
 pub use application::{
     AnalysisService, AnalyzeRequest, AnalyzeResponse, DuplicateGroupDto, DuplicateInstanceDto,
     FileMetricsDto, NodeMetricsDto, WantFlags,
 };
 pub use domain::{FileMetrics, NodeMetrics, SourceCode, StructuralEvent};
 pub use infrastructure::TreeSitterAdapter;
-
-use domain::primitives::DomainError;
 
 /// Main analysis entry point - narrow waist interface
 pub fn analyze(text: String, language: String) -> Result<AnalyzeResponse, DomainError> {

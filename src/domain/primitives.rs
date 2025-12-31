@@ -234,6 +234,7 @@ impl Symbol {
         let valid = name.chars().all(|c| {
             c.is_alphanumeric()
                 || c == '_'
+                || c == '$'
                 || c == '.'
                 || c == ':'
                 || c == '/'
