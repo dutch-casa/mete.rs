@@ -344,15 +344,15 @@ mod tests {
     #[test]
     fn stability_index_calculation() {
         let mi = MaintainabilityIndex::new(75.0).unwrap();
-        
+
         let stable = FileMetrics::new(100, 5, 10, 3, 10, 2, 1, mi, 0, 2).unwrap();
         assert!(stable.stability_index() < 0.5);
         assert!(stable.is_stable());
-        
+
         let unstable = FileMetrics::new(100, 5, 10, 3, 2, 10, 1, mi, 0, 2).unwrap();
         assert!(unstable.stability_index() > 0.5);
         assert!(!unstable.is_stable());
-        
+
         let isolated = FileMetrics::new(100, 5, 10, 3, 0, 0, 1, mi, 0, 2).unwrap();
         assert_eq!(isolated.stability_index(), 0.0);
     }
@@ -384,4 +384,3 @@ mod tests {
         assert_eq!(agg.avg_cc, 4.0);
     }
 }
-

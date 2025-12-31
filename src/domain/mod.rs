@@ -69,7 +69,9 @@ let metrics = source.compute_metrics(&events)?;
 pub mod source_code;
 
 pub use events::StructuralEvent;
-pub use metrics::{DuplicateGroup, DuplicateInstance, FileMetrics, MaintainabilityIndex, NodeMetrics, StructuralFingerprint};
+pub use metrics::{
+    DuplicateGroup, DuplicateInstance, FileMetrics, MaintainabilityIndex, NodeMetrics,
+    StructuralFingerprint,
+};
 pub use primitives::{BytePos, LanguageId, SourceText, Span};
 pub use source_code::SourceCode;
-

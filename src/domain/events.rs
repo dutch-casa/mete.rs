@@ -242,4 +242,3 @@ mod tests {
         assert!(validator.validate(&func_end).is_err());
     }
 }
-

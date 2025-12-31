@@ -1,3 +1,4 @@
+pub mod application;
 /**
 # Purpose
 
@@ -8,7 +9,7 @@ Implements DDD with deep modules pattern for clean architecture.
 
 Three-layer architecture:
 - Domain: pure business logic and invariants
-- Application: use cases and orchestration  
+- Application: use cases and orchestration
 - Infrastructure: external adapters and I/O
 
 Deep modules provide:
@@ -50,13 +51,14 @@ let request = AnalyzeRequest::new(text, language)?;
 let response = AnalysisService::analyze(request)?;
 ```
 */
-
 pub mod domain;
-pub mod application;
 pub mod infrastructure;
 
-pub use domain::{SourceCode, StructuralEvent, FileMetrics, NodeMetrics};
-pub use application::{AnalyzeRequest, AnalyzeResponse, AnalysisService, WantFlags, FileMetricsDto, DuplicateGroupDto, DuplicateInstanceDto};
+pub use application::{
+    AnalysisService, AnalyzeRequest, AnalyzeResponse, DuplicateGroupDto, DuplicateInstanceDto,
+    FileMetricsDto, NodeMetricsDto, WantFlags,
+};
+pub use domain::{FileMetrics, NodeMetrics, SourceCode, StructuralEvent};
 pub use infrastructure::TreeSitterAdapter;
 
 use domain::primitives::DomainError;

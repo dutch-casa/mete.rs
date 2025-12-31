@@ -125,7 +125,7 @@ impl WantFlags {
 }
 
 /// Analysis response DTO - external data transfer object
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AnalyzeResponse {
     pub version: u32,
     pub revision: u64,
