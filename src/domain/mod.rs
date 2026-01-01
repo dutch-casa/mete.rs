@@ -1,3 +1,4 @@
+pub mod entropy;
 pub mod events;
 pub mod metrics;
 pub mod primitives;
@@ -68,6 +69,10 @@ let metrics = source.compute_metrics(&events)?;
 */
 pub mod source_code;
 
+pub use entropy::{
+    EntropyResult, EntropyRules, MetricMass, NodeCount, ShannonEntropy, SymbolDistribution,
+    SymbolFrequency,
+};
 pub use events::StructuralEvent;
 pub use metrics::{
     DuplicateGroup, DuplicateInstance, FileMetrics, MaintainabilityIndex, NodeMetrics,

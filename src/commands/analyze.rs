@@ -323,16 +323,16 @@ fn display_table(results: &[FileResult], threshold: Option<f64>) {
     display_summary_row(&aggs);
 
     println!();
-    println!("{}", "─".repeat(95).dimmed());
+    println!("{}", "─".repeat(105).dimmed());
     println!("{}", "Details".cyan().bold());
-    println!("{}", "─".repeat(95).dimmed());
+    println!("{}", "─".repeat(105).dimmed());
     println!();
     println!(
-        "{:<60} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "{:<55} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>8} {:>6}",
         "File".cyan(),
         "LOC".cyan(),
         "CCmax".cyan(),
-        "CCsum".cyan(),
+        "COG".cyan(),
         "MI".cyan(),
         "Depth".cyan(),
         "Fan-in".cyan(),
@@ -340,7 +340,7 @@ fn display_table(results: &[FileResult], threshold: Option<f64>) {
         "Dups".cyan(),
         "Funcs".cyan()
     );
-    println!("{}", "─".repeat(95).dimmed());
+    println!("{}", "─".repeat(105).dimmed());
 
     for result in results {
         let m = &result.metrics;
@@ -361,6 +361,14 @@ fn display_table(results: &[FileResult], threshold: Option<f64>) {
             "red"
         };
 
+        let cognitive_color = if m.cognitive_max <= 8 {
+            "green"
+        } else if m.cognitive_max <= 15 {
+            "yellow"
+        } else {
+            "red"
+        };
+
         let depth_color = if m.depth_max <= 3 {
             "green"
         } else if m.depth_max <= 5 {
@@ -370,21 +378,23 @@ fn display_table(results: &[FileResult], threshold: Option<f64>) {
         };
 
         let cc_str = format!("{}", m.cc_max);
+        let cognitive_str = format!("{}", m.cognitive_max);
         let mi_str = format!("{:.1}", m.mi);
         let depth_str = format!("{}", m.depth_max);
 
         let mi_colored = colorize(&mi_str, mi_color);
         let cc_colored = colorize(&cc_str, cc_color);
+        let cognitive_colored = colorize(&cognitive_str, cognitive_color);
         let depth_colored = colorize(&depth_str, depth_color);
 
-        let name: String = result.filename.chars().take(57).collect();
+        let name: String = result.filename.chars().take(52).collect();
 
         println!(
-            "{:<60} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            "{:<55} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>8} {:>6}",
             name,
             m.loc.to_string(),
             cc_colored,
-            m.cc_sum.to_string(),
+            cognitive_colored,
             mi_colored,
             depth_colored,
             m.fan_in.to_string(),
@@ -404,6 +414,7 @@ fn display_json(results: &[FileResult]) {
             "total_loc": aggs.total_loc,
             "avg_mi": aggs.avg_mi,
             "avg_cc_max": aggs.avg_cc_max,
+            "avg_cognitive_max": aggs.avg_cognitive_max,
             "avg_depth": aggs.avg_depth,
             "total_dups": aggs.total_dups,
             "avg_functions": aggs.avg_functions,
@@ -415,6 +426,8 @@ fn display_json(results: &[FileResult]) {
                     "loc": r.metrics.loc,
                     "cc_max": r.metrics.cc_max,
                     "cc_sum": r.metrics.cc_sum,
+                    "cognitive_max": r.metrics.cognitive_max,
+                    "cognitive_sum": r.metrics.cognitive_sum,
                     "depth_max": r.metrics.depth_max,
                     "fan_in": r.metrics.fan_in,
                     "fan_out": r.metrics.fan_out,
@@ -434,25 +447,27 @@ fn display_json(results: &[FileResult]) {
 
 fn display_csv(results: &[FileResult]) {
     println!(
-        "path,loc,cc_max,cc_sum,depth_max,fan_in,fan_out,exports,mi,dup_blocks,functions_count,stability"
+        "path,loc,cc_max,cc_sum,cognitive_max,cognitive_sum,depth_max,fan_in,fan_out,exports,mi,dup_blocks,functions_count,stability"
     );
 
     for result in results {
         let m = &result.metrics;
         println!(
-            "{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{:.2},{},{},{:.2}",
             result.filename,
             m.loc,
             m.cc_max,
             m.cc_sum,
+            m.cognitive_max,
+            m.cognitive_sum,
             m.depth_max,
             m.fan_in,
             m.fan_out,
             m.exports,
-            format!("{:.2}", m.mi),
+            m.mi,
             m.dup_blocks,
             m.functions_count,
-            format!("{:.2}", m.stability)
+            m.stability
         );
     }
 }
@@ -470,6 +485,11 @@ fn display_summary(results: &[FileResult]) {
         "  {} {}",
         "Avg CCmax:".cyan(),
         format!("{:.1}", aggs.avg_cc_max)
+    );
+    println!(
+        "  {} {}",
+        "Avg Cognitive:".cyan(),
+        format!("{:.1}", aggs.avg_cognitive_max)
     );
     println!(
         "  {} {}",
@@ -503,8 +523,17 @@ fn display_summary_row(aggs: &Aggregates) {
         "red"
     };
 
+    let cognitive = aggs.avg_cognitive_max;
+    let cognitive_color = if cognitive <= 8.0 {
+        "green"
+    } else if cognitive <= 15.0 {
+        "yellow"
+    } else {
+        "red"
+    };
+
     let depth = aggs.avg_depth;
-    let depth_color = if depth <= 3.0 {
+    let _depth_color = if depth <= 3.0 {
         "green"
     } else if depth <= 5.0 {
         "yellow"
@@ -514,11 +543,11 @@ fn display_summary_row(aggs: &Aggregates) {
 
     let mi_colored = format!("{:.1}", mi);
     let cc_colored = format!("{:.1}", cc);
-    let depth_colored = format!("{:.1}", depth);
+    let cognitive_colored = format!("{:.1}", cognitive);
 
     let mi_formatted = colorize(&mi_colored, mi_color);
     let cc_formatted = colorize(&cc_colored, cc_color);
-    let _depth_formatted = colorize(&depth_colored, depth_color);
+    let cognitive_formatted = colorize(&cognitive_colored, cognitive_color);
 
     println!(
         "{}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}",
@@ -526,13 +555,13 @@ fn display_summary_row(aggs: &Aggregates) {
         aggs.total_loc.to_string().white().bold(),
         "CCavg:".cyan(),
         cc_formatted,
+        "COG:".cyan(),
+        cognitive_formatted,
         "MIavg:".cyan(),
         mi_formatted,
-        "Depth:".cyan(),
         "Dups:".cyan(),
         aggs.total_dups.to_string().white(),
-        "Funcs:".cyan(),
-        format!("{:.1}", aggs.avg_functions).white(),
+        format!("Funcs: {:.1}", aggs.avg_functions).white(),
     );
 }
 
@@ -552,6 +581,7 @@ fn compute_aggregates(results: &[FileResult]) -> Aggregates {
         return Aggregates {
             total_loc: 0,
             avg_cc_max: 0.0,
+            avg_cognitive_max: 0.0,
             avg_mi: 0.0,
             avg_depth: 0.0,
             total_dups: 0,
@@ -561,6 +591,11 @@ fn compute_aggregates(results: &[FileResult]) -> Aggregates {
 
     let total_loc: u32 = results.iter().map(|r| r.metrics.loc).sum();
     let avg_cc_max: f64 = results.iter().map(|r| r.metrics.cc_max as f64).sum::<f64>() / count;
+    let avg_cognitive_max: f64 = results
+        .iter()
+        .map(|r| r.metrics.cognitive_max as f64)
+        .sum::<f64>()
+        / count;
     let total_mi: f64 = results.iter().map(|r| r.metrics.mi).sum::<f64>();
     let avg_depth: f64 = results
         .iter()
@@ -577,6 +612,7 @@ fn compute_aggregates(results: &[FileResult]) -> Aggregates {
     Aggregates {
         total_loc,
         avg_cc_max,
+        avg_cognitive_max,
         avg_mi: total_mi / count,
         avg_depth,
         total_dups,
@@ -587,6 +623,7 @@ fn compute_aggregates(results: &[FileResult]) -> Aggregates {
 struct Aggregates {
     total_loc: u32,
     avg_cc_max: f64,
+    avg_cognitive_max: f64,
     avg_mi: f64,
     avg_depth: f64,
     total_dups: u32,
@@ -597,6 +634,7 @@ struct Aggregates {
 pub struct FileResult {
     pub filename: String,
     pub metrics: FileMetrics,
+    #[allow(dead_code)]
     pub duplicates: Vec<DuplicateInfo>,
 }
 
@@ -605,6 +643,8 @@ pub struct FileMetrics {
     pub loc: u32,
     pub cc_max: u32,
     pub cc_sum: u32,
+    pub cognitive_max: u32,
+    pub cognitive_sum: u32,
     pub depth_max: u32,
     pub fan_in: u32,
     pub fan_out: u32,
@@ -617,14 +657,19 @@ pub struct FileMetrics {
 
 #[derive(Debug, Clone)]
 pub struct DuplicateInfo {
+    #[allow(dead_code)]
     pub fingerprint: u64,
+    #[allow(dead_code)]
     pub instances: Vec<DuplicateInstance>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DuplicateInstance {
+    #[allow(dead_code)]
     pub name: Option<String>,
+    #[allow(dead_code)]
     pub start_line: u32,
+    #[allow(dead_code)]
     pub end_line: u32,
 }
 
@@ -640,6 +685,8 @@ impl FileResult {
                 loc: metrics.loc,
                 cc_max: metrics.cc_max,
                 cc_sum: metrics.cc_sum,
+                cognitive_max: metrics.cognitive_max,
+                cognitive_sum: metrics.cognitive_sum,
                 depth_max: metrics.depth_max,
                 fan_in: metrics.fan_in,
                 fan_out: metrics.fan_out,

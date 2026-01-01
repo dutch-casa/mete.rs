@@ -55,6 +55,7 @@ pub mod domain;
 pub mod infrastructure;
 
 pub use domain::primitives::DomainError;
+pub use domain::primitives::{BytePos, LanguageId, SourceText, Span};
 
 pub use application::{
     AnalysisService, AnalyzeRequest, AnalyzeResponse, DuplicateGroupDto, DuplicateInstanceDto,
@@ -62,6 +63,10 @@ pub use application::{
 };
 pub use domain::{FileMetrics, NodeMetrics, SourceCode, StructuralEvent};
 pub use infrastructure::TreeSitterAdapter;
+
+pub use domain::entropy::{
+    EntropyResult, EntropyRules, MetricMass, NodeCount, ShannonEntropy, SymbolDistribution,
+};
 
 /// Main analysis entry point - narrow waist interface
 pub fn analyze(text: String, language: String) -> Result<AnalyzeResponse, DomainError> {

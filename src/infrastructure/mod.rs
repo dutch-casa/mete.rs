@@ -1,3 +1,4 @@
+use crate::domain::entropy::SymbolDistribution;
 use crate::domain::events::BranchType;
 use crate::domain::primitives::{BytePos, DomainError, LanguageId, SourceText};
 use crate::domain::StructuralEvent;
@@ -216,6 +217,81 @@ impl TreeSitterAdapter {
             | "elif_clause" => BranchType::Exception,
             _ => BranchType::Conditional,
         }
+    }
+
+    /// Extract symbol distribution for entropy calculation
+    /// Walks AST and collects node types, excluding comments and punctuation
+    pub fn extract_symbol_distribution(
+        &mut self,
+        text: &SourceText,
+    ) -> Result<SymbolDistribution, DomainError> {
+        let source = text.as_str();
+        let tree = self
+            .parser
+            .parse(source, None)
+            .ok_or_else(|| DomainError::InvalidUtf8("Failed to parse source".to_string()))?;
+
+        let mut distribution = SymbolDistribution::with_capacity(128);
+        let mut cursor = tree.walk();
+
+        self.walk_for_entropy(&mut distribution, &mut cursor, source.as_bytes())?;
+
+        Ok(distribution)
+    }
+
+    fn walk_for_entropy(
+        &self,
+        distribution: &mut SymbolDistribution,
+        cursor: &mut tree_sitter::TreeCursor,
+        source: &[u8],
+    ) -> Result<(), DomainError> {
+        loop {
+            let node = cursor.node();
+            let kind = node.kind();
+
+            // Collect valid structural symbols
+            if Self::is_valid_symbol(kind) {
+                distribution.insert(kind.to_string());
+            }
+
+            if cursor.goto_first_child() {
+                self.walk_for_entropy(distribution, cursor, source)?;
+                cursor.goto_parent();
+            }
+
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a node kind is a valid structural symbol
+    /// Excludes comments and punctuation
+    fn is_valid_symbol(kind: &str) -> bool {
+        // Exclude comments
+        if kind == "comment"
+            || kind == "line_comment"
+            || kind == "block_comment"
+            || kind == "doc_comment"
+        {
+            return false;
+        }
+
+        // Exclude punctuation (syntax glue, not user choices)
+        let punctuation = [
+            ";", ",", ".", "(", ")", "[", "]", "{", "}", "<", ">", ":", "::", "->", "=>", "=", "+",
+            "-", "*", "/", "%", "!", "~", "&", "|", "^", "?", "@", "#", "$", "_", "\\", "'", "\"",
+            "`",
+        ];
+        if punctuation.contains(&kind) {
+            return false;
+        }
+
+        // Include keywords and identifiers (these represent logic choices)
+        // Exclude only noise tokens that add no structural information
+        true
     }
 }
 

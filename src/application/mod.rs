@@ -174,6 +174,8 @@ pub struct FileMetricsDto {
     pub loc: u32,
     pub cc_max: u32,
     pub cc_sum: u32,
+    pub cognitive_max: u32,
+    pub cognitive_sum: u32,
     pub depth_max: u32,
     pub fan_in: u32,
     pub fan_out: u32,
@@ -190,6 +192,8 @@ impl From<crate::domain::metrics::FileMetrics> for FileMetricsDto {
             loc: metrics.loc,
             cc_max: metrics.cc_max,
             cc_sum: metrics.cc_sum,
+            cognitive_max: metrics.cognitive_max,
+            cognitive_sum: metrics.cognitive_sum,
             depth_max: metrics.depth_max,
             fan_in: metrics.fan_in,
             fan_out: metrics.fan_out,
@@ -209,6 +213,7 @@ pub struct NodeMetricsDto {
     pub span: SpanDto,
     pub loc: u32,
     pub cc: u32,
+    pub cognitive: u32,
     pub depth: u32,
     pub fingerprint: u64,
 }
@@ -220,6 +225,7 @@ impl From<crate::domain::metrics::NodeMetrics> for NodeMetricsDto {
             span: SpanDto::from(metrics.span),
             loc: metrics.loc,
             cc: metrics.cc,
+            cognitive: metrics.cognitive,
             depth: metrics.depth,
             fingerprint: metrics.fingerprint.as_u64(),
         }

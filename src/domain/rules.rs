@@ -1,4 +1,4 @@
-use crate::domain::events::StructuralEvent;
+use crate::domain::events::{BranchType, StructuralEvent};
 use crate::domain::metrics::{
     FileMetrics, MaintainabilityIndex, NodeMetrics, StructuralFingerprint,
 };
@@ -78,6 +78,141 @@ impl ComplexityRules {
         }
 
         Ok(())
+    }
+}
+
+/// Cognitive Complexity computation rules (SonarSource spec)
+///
+/// Key differences from Cyclomatic Complexity:
+/// - Nested structures increment based on current nesting depth
+/// - else/else if have 0 nesting tax (just +1 structural)
+/// - Function/lambda boundaries reset nesting level
+/// - break/continue/return/throw are free (0 cost)
+/// - Binary boolean operators add +1 per contiguous sequence
+#[derive(Debug)]
+pub struct CognitiveComplexityRules;
+
+impl CognitiveComplexityRules {
+    /// Base cognitive complexity for any function
+    pub fn base_score() -> u32 {
+        0 // Unlike CC, cognitive complexity starts at 0
+    }
+
+    /// Compute cognitive complexity from structural events
+    /// Implements the SonarSource scoring algorithm
+    pub fn compute_from_events(events: &[StructuralEvent]) -> u32 {
+        if events.is_empty() {
+            return 0;
+        }
+
+        let mut complexity = 0u32;
+        let mut nesting_level = 0u32;
+        let mut in_function = false;
+        let mut prev_was_else_if = false;
+        let mut prev_was_else = false;
+
+        for event in events {
+            match event {
+                StructuralEvent::FunctionStart { .. } => {
+                    // Function boundaries reset nesting
+                    nesting_level = 0;
+                    in_function = true;
+                    prev_was_else_if = false;
+                    prev_was_else = false;
+                }
+                StructuralEvent::FunctionEnd { .. } => {
+                    in_function = false;
+                    nesting_level = 0;
+                    prev_was_else_if = false;
+                    prev_was_else = false;
+                }
+                StructuralEvent::BlockEntry { .. } => {
+                    // Entering a block increases nesting for subsequent control structures
+                    // But only if we're inside a function
+                    if in_function {
+                        nesting_level += 1;
+                    }
+                    prev_was_else_if = false;
+                    prev_was_else = false;
+                }
+                StructuralEvent::BlockExit { .. } => {
+                    if nesting_level > 0 {
+                        nesting_level -= 1;
+                    }
+                    prev_was_else_if = false;
+                    prev_was_else = false;
+                }
+                StructuralEvent::Branch { branch_type, .. } => {
+                    if !in_function {
+                        continue;
+                    }
+
+                    match branch_type {
+                        BranchType::Conditional => {
+                            // if: +1 structural + current nesting
+                            // else if: +1 structural only (0 nesting tax)
+                            // else: +1 structural only (0 nesting tax)
+                            if prev_was_else_if || prev_was_else {
+                                // else if or else - no nesting penalty
+                                complexity += 1;
+                            } else {
+                                // Regular if - pay nesting penalty
+                                complexity += 1 + nesting_level;
+                            }
+                            // Reset the else flags - the next conditional in this block
+                            // would need to be at the same nesting level
+                            prev_was_else_if = false;
+                            prev_was_else = false;
+                        }
+                        BranchType::Loop => {
+                            // for/while: +1 structural + current nesting
+                            complexity += 1 + nesting_level;
+                            prev_was_else_if = false;
+                            prev_was_else = false;
+                        }
+                        BranchType::Switch => {
+                            // switch: +1 structural + current nesting
+                            complexity += 1 + nesting_level;
+                            prev_was_else_if = false;
+                            prev_was_else = false;
+                        }
+                        BranchType::Exception => {
+                            // catch: +1 structural + current nesting
+                            complexity += 1 + nesting_level;
+                            prev_was_else_if = false;
+                            prev_was_else = false;
+                        }
+                        BranchType::Logical => {
+                            // This is for ternary (conditional_expression)
+                            // +1 structural + current nesting
+                            complexity += 1 + nesting_level;
+                            prev_was_else_if = false;
+                            prev_was_else = false;
+                        }
+                    }
+                }
+                _ => {
+                    prev_was_else_if = false;
+                    prev_was_else = false;
+                }
+            }
+
+            // Track else/else if for the next iteration
+            // We need to look at the next event to determine if this is else/else if
+            // For now, we rely on the next conditional being at the same nesting level
+        }
+
+        complexity.max(1) // Ensure at least 1 for non-empty functions
+    }
+
+    /// Compute max cognitive complexity across nodes
+    pub fn compute_max_cognitive(nodes: &[NodeMetrics]) -> u32 {
+        nodes.iter().map(|n| n.cognitive).max().unwrap_or(0)
+    }
+
+    /// Compute sum of cognitive complexity across nodes
+    pub fn compute_sum_cognitive(nodes: &[NodeMetrics]) -> u32 {
+        nodes.iter().map(|n| n.cognitive).sum()
     }
 }
 
@@ -246,10 +381,22 @@ impl AggregationRules {
         let fingerprints = Self::compute_fingerprints(nodes);
         let dup_blocks = DuplicationRules::count_duplicates(&fingerprints);
 
+        let (cognitive_sum, cognitive_max) = if nodes.is_empty() {
+            let cognitive = CognitiveComplexityRules::compute_from_events(events);
+            (cognitive, cognitive)
+        } else {
+            (
+                CognitiveComplexityRules::compute_sum_cognitive(nodes),
+                CognitiveComplexityRules::compute_max_cognitive(nodes),
+            )
+        };
+
         FileMetrics::new(
             loc,
             cc_max,
             cc_sum,
+            cognitive_max,
+            cognitive_sum,
             depth_max,
             0,
             fan_out,

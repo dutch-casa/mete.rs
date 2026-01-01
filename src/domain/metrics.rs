@@ -95,6 +95,8 @@ pub struct FileMetrics {
     pub loc: u32,
     pub cc_max: u32,
     pub cc_sum: u32,
+    pub cognitive_max: u32,
+    pub cognitive_sum: u32,
     pub depth_max: u32,
     pub fan_in: u32,
     pub fan_out: u32,
@@ -110,6 +112,8 @@ impl FileMetrics {
         loc: u32,
         cc_max: u32,
         cc_sum: u32,
+        cognitive_max: u32,
+        cognitive_sum: u32,
         depth_max: u32,
         fan_in: u32,
         fan_out: u32,
@@ -124,10 +128,18 @@ impl FileMetrics {
             ));
         }
 
+        if cognitive_max > cognitive_sum {
+            return Err(DomainError::InvalidSpan(
+                "max cognitive complexity exceeds sum".to_string(),
+            ));
+        }
+
         Ok(FileMetrics {
             loc,
             cc_max,
             cc_sum,
+            cognitive_max,
+            cognitive_sum,
             depth_max,
             fan_in,
             fan_out,
@@ -192,6 +204,7 @@ pub struct NodeMetrics {
     pub span: Span,
     pub loc: u32,
     pub cc: u32,
+    pub cognitive: u32,
     pub depth: u32,
     pub fingerprint: StructuralFingerprint,
 }
@@ -202,6 +215,7 @@ impl NodeMetrics {
         span: Span,
         loc: u32,
         cc: u32,
+        cognitive: u32,
         depth: u32,
         fingerprint: StructuralFingerprint,
     ) -> Result<Self, DomainError> {
@@ -217,11 +231,18 @@ impl NodeMetrics {
             ));
         }
 
+        if cognitive == 0 {
+            return Err(DomainError::InvalidSpan(
+                "node cognitive complexity cannot be zero".to_string(),
+            ));
+        }
+
         Ok(NodeMetrics {
             name,
             span,
             loc,
             cc,
+            cognitive,
             depth,
             fingerprint,
         })
@@ -337,23 +358,24 @@ mod tests {
     fn file_metrics_invariants() {
         let mi = MaintainabilityIndex::new(75.0).unwrap();
 
-        assert!(FileMetrics::new(100, 5, 10, 3, 0, 2, 1, mi, 0, 2).is_ok());
-        assert!(FileMetrics::new(100, 15, 10, 3, 0, 2, 1, mi, 0, 2).is_err());
+        assert!(FileMetrics::new(100, 5, 10, 3, 8, 3, 0, 2, 1, mi, 0, 2).is_ok());
+        assert!(FileMetrics::new(100, 15, 10, 3, 8, 3, 0, 2, 1, mi, 0, 2).is_err());
+        assert!(FileMetrics::new(100, 5, 10, 10, 8, 3, 0, 2, 1, mi, 0, 2).is_err());
     }
 
     #[test]
     fn stability_index_calculation() {
         let mi = MaintainabilityIndex::new(75.0).unwrap();
 
-        let stable = FileMetrics::new(100, 5, 10, 3, 10, 2, 1, mi, 0, 2).unwrap();
+        let stable = FileMetrics::new(100, 5, 10, 3, 8, 2, 10, 1, 0, mi, 0, 2).unwrap();
         assert!(stable.stability_index() < 0.5);
         assert!(stable.is_stable());
 
-        let unstable = FileMetrics::new(100, 5, 10, 3, 2, 10, 1, mi, 0, 2).unwrap();
+        let unstable = FileMetrics::new(100, 5, 10, 3, 8, 2, 2, 10, 0, mi, 0, 2).unwrap();
         assert!(unstable.stability_index() > 0.5);
         assert!(!unstable.is_stable());
 
-        let isolated = FileMetrics::new(100, 5, 10, 3, 0, 0, 1, mi, 0, 2).unwrap();
+        let isolated = FileMetrics::new(100, 5, 10, 3, 8, 2, 0, 0, 0, mi, 0, 2).unwrap();
         assert_eq!(isolated.stability_index(), 0.0);
     }
 
@@ -362,9 +384,14 @@ mod tests {
         let span = Span::new(BytePos::new(0).unwrap(), BytePos::new(10).unwrap()).unwrap();
         let fingerprint = StructuralFingerprint::new(12345);
 
-        assert!(NodeMetrics::new(Some("test".to_string()), span, 10, 3, 2, fingerprint).is_ok());
-        assert!(NodeMetrics::new(Some("test".to_string()), span, 0, 3, 2, fingerprint).is_err());
-        assert!(NodeMetrics::new(Some("test".to_string()), span, 10, 0, 2, fingerprint).is_err());
+        assert!(NodeMetrics::new(Some("test".to_string()), span, 10, 3, 4, 2, fingerprint).is_ok());
+        assert!(NodeMetrics::new(Some("test".to_string()), span, 0, 3, 4, 2, fingerprint).is_err());
+        assert!(
+            NodeMetrics::new(Some("test".to_string()), span, 10, 0, 4, 2, fingerprint).is_err()
+        );
+        assert!(
+            NodeMetrics::new(Some("test".to_string()), span, 10, 3, 0, 2, fingerprint).is_err()
+        );
     }
 
     #[test]
@@ -373,8 +400,8 @@ mod tests {
         let fingerprint = StructuralFingerprint::new(12345);
 
         let nodes = vec![
-            NodeMetrics::new(Some("f1".to_string()), span, 10, 3, 2, fingerprint).unwrap(),
-            NodeMetrics::new(Some("f2".to_string()), span, 20, 5, 3, fingerprint).unwrap(),
+            NodeMetrics::new(Some("f1".to_string()), span, 10, 3, 4, 2, fingerprint).unwrap(),
+            NodeMetrics::new(Some("f2".to_string()), span, 20, 5, 6, 3, fingerprint).unwrap(),
         ];
 
         let agg = AggregatedMetrics::from_nodes(&nodes);

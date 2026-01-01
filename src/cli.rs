@@ -149,6 +149,29 @@ pub enum Commands {
         metric: Option<String>,
     },
 
+    /// Measure structural entropy (syntactic complexity)
+    Entropy {
+        /// Source file or directory to analyze
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// Programming language (auto-detect if not provided)
+        #[arg(short, long)]
+        language: Option<String>,
+
+        /// File pattern for directories
+        #[arg(short, long, default_value = "**/*")]
+        pattern: String,
+
+        /// Maximum number of results to show (0 = no limit)
+        #[arg(short, long)]
+        top_n: Option<usize>,
+
+        /// Output format
+        #[arg(short, long, default_value = "table", value_parser = ["table", "json", "csv"])]
+        format: String,
+    },
+
     /// Generate configuration file
     Init {
         /// Configuration file path
@@ -241,6 +264,21 @@ impl CliRunner {
                 pattern,
                 *min_instances,
                 *show_code,
+                format,
+                self.cli.verbose,
+                self.cli.quiet,
+            ),
+            Some(Commands::Entropy {
+                path,
+                language,
+                pattern,
+                top_n,
+                format,
+            }) => entropy::run_entropy(
+                path,
+                language.as_deref(),
+                pattern,
+                *top_n,
                 format,
                 self.cli.verbose,
                 self.cli.quiet,

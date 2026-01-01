@@ -29,7 +29,9 @@ All internal state is encapsulated and protected.
 External access is only through validated domain operations.
 */
 use crate::domain::primitives::{BytePos, DomainError, LanguageId, SourceText};
-use crate::domain::rules::{AggregationRules, DuplicationRules};
+use crate::domain::rules::{
+    AggregationRules, CognitiveComplexityRules, ComplexityRules, DuplicationRules,
+};
 
 /// SourceCode aggregate root - the primary domain entity
 #[derive(Debug, Clone)]
@@ -221,10 +223,13 @@ impl SourceCode {
                             DuplicationRules::compute_fingerprint_from_events(function_events);
 
                         let loc = self.estimate_loc_for_span(span).max(1);
-                        let cc = self.estimate_complexity_for_events(function_events).max(1);
+                        let cc = ComplexityRules::compute_from_events(function_events).max(1);
+                        let cognitive =
+                            CognitiveComplexityRules::compute_from_events(function_events).max(1);
                         let depth = self.estimate_depth_for_events(function_events);
 
-                        let node = NodeMetrics::new(name, span, loc, cc, depth, fingerprint)?;
+                        let node =
+                            NodeMetrics::new(name, span, loc, cc, cognitive, depth, fingerprint)?;
                         nodes.push(node);
                     }
                 }
@@ -238,18 +243,6 @@ impl SourceCode {
     fn estimate_loc_for_span(&self, span: crate::domain::primitives::Span) -> u32 {
         let substring = self.text.substring(span).unwrap_or("");
         substring.lines().count() as u32
-    }
-
-    fn estimate_complexity_for_events(&self, events: &[StructuralEvent]) -> u32 {
-        let mut complexity = 1;
-
-        for event in events {
-            if event.is_branch() {
-                complexity += 1;
-            }
-        }
-
-        complexity
     }
 
     fn estimate_depth_for_events(&self, events: &[StructuralEvent]) -> u32 {
