@@ -2,7 +2,7 @@ use crate::domain::entropy::SymbolDistribution;
 use crate::domain::events::BranchType;
 use crate::domain::primitives::{BytePos, DomainError, LanguageId, SourceText};
 use crate::domain::StructuralEvent;
-use tree_sitter::{Language, Node, Parser};
+use tree_sitter::{Node, Parser};
 
 pub struct TreeSitterAdapter {
     parser: Parser,
@@ -29,7 +29,7 @@ impl TreeSitterAdapter {
 
     fn get_language_and_spec(
         language: LanguageId,
-    ) -> Result<(Language, LanguageSpec), DomainError> {
+    ) -> Result<(tree_sitter::Language, LanguageSpec), DomainError> {
         match language {
             LanguageId::Rust => Ok((tree_sitter_rust::LANGUAGE.into(), LanguageSpec::rust())),
             LanguageId::TypeScript => Ok((
@@ -42,8 +42,12 @@ impl TreeSitterAdapter {
             )),
             LanguageId::Python => Ok((tree_sitter_python::LANGUAGE.into(), LanguageSpec::python())),
             LanguageId::Go => Ok((tree_sitter_go::LANGUAGE.into(), LanguageSpec::go())),
+            LanguageId::Java => Ok((tree_sitter_java::LANGUAGE.into(), LanguageSpec::java())),
+            LanguageId::CSharp => {
+                Ok((tree_sitter_c_sharp::LANGUAGE.into(), LanguageSpec::csharp()))
+            }
             LanguageId::Elixir => Ok((tree_sitter_elixir::LANGUAGE.into(), LanguageSpec::elixir())),
-            _ => Err(DomainError::UnsupportedLanguage(format!("{:?}", language))),
+            LanguageId::Cpp => Ok((tree_sitter_cpp::LANGUAGE.into(), LanguageSpec::cpp())),
         }
     }
 
@@ -59,13 +63,11 @@ impl TreeSitterAdapter {
 
         let mut events = Vec::new();
         let mut cursor = tree.walk();
-
-        self.walk_tree(&mut events, &mut cursor, source.as_bytes())?;
-
+        self.walk_tree_iterative(&mut events, &mut cursor, source.as_bytes())?;
         Ok(events)
     }
 
-    fn walk_tree(
+    fn walk_tree_iterative(
         &self,
         events: &mut Vec<StructuralEvent>,
         cursor: &mut tree_sitter::TreeCursor,
@@ -74,25 +76,34 @@ impl TreeSitterAdapter {
         loop {
             let node = cursor.node();
             let kind = node.kind();
-
             let is_function = self.spec.function_nodes.contains(&kind);
             let is_block = self.spec.block_nodes.contains(&kind);
 
             self.process_node_entry(events, &node, kind, source)?;
 
             if cursor.goto_first_child() {
-                self.walk_tree(events, cursor, source)?;
-                cursor.goto_parent();
+                continue;
             }
 
             self.process_node_exit(events, &node, is_function, is_block)?;
 
-            if !cursor.goto_next_sibling() {
-                break;
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return Ok(());
+                }
+                let parent = cursor.node();
+                let parent_kind = parent.kind();
+                self.process_node_exit(
+                    events,
+                    &parent,
+                    self.spec.function_nodes.contains(&parent_kind),
+                    self.spec.block_nodes.contains(&parent_kind),
+                )?;
             }
         }
-
-        Ok(())
     }
 
     fn process_node_entry(
@@ -104,41 +115,35 @@ impl TreeSitterAdapter {
     ) -> Result<(), DomainError> {
         let start_byte = node.start_byte() as u32;
         let end_byte = node.end_byte() as u32;
+        let start = BytePos::new(start_byte)?;
+        let end = BytePos::new(end_byte)?;
 
-        if self.spec.function_nodes.contains(&kind) {
-            let name = self.extract_function_name(node, source);
-            let start = BytePos::new(start_byte)?;
-            let end = BytePos::new(end_byte)?;
-            events.push(StructuralEvent::function_start(name, start, end)?);
-        }
-
-        if self.spec.block_nodes.contains(&kind) {
-            let start = BytePos::new(start_byte)?;
-            let end = BytePos::new(end_byte)?;
-            events.push(StructuralEvent::block_entry(start, end)?);
-        }
-
-        if self.spec.branch_nodes.contains(&kind) {
-            let branch_type = self.classify_branch(kind);
-            let start = BytePos::new(start_byte)?;
-            let end = BytePos::new(end_byte)?;
-            events.push(StructuralEvent::branch(start, end, branch_type)?);
-        }
-
-        if self.spec.import_nodes.contains(&kind) {
-            if let Some(symbol) = self.extract_import_symbol(node, source) {
-                let start = BytePos::new(start_byte)?;
-                let end = BytePos::new(end_byte)?;
-                events.push(StructuralEvent::import(symbol, start, end)?);
+        match kind {
+            k if self.spec.function_nodes.contains(&k) => {
+                let name = self.extract_function_name(node, source);
+                events.push(StructuralEvent::function_start(name, start, end)?);
             }
-        }
-
-        if self.spec.export_nodes.contains(&kind) {
-            if let Some(symbol) = self.extract_export_symbol(node, source) {
-                let start = BytePos::new(start_byte)?;
-                let end = BytePos::new(end_byte)?;
-                events.push(StructuralEvent::export(symbol, start, end)?);
+            k if self.spec.block_nodes.contains(&k) => {
+                events.push(StructuralEvent::block_entry(start, end)?);
             }
+            k if self.spec.branch_nodes.contains(&k) => {
+                events.push(StructuralEvent::branch(
+                    start,
+                    end,
+                    self.classify_branch(k),
+                )?);
+            }
+            k if self.spec.import_nodes.contains(&k) => {
+                if let Some(symbol) = self.extract_import_symbol(node, source) {
+                    events.push(StructuralEvent::import(symbol, start, end)?);
+                }
+            }
+            k if self.spec.export_nodes.contains(&k) => {
+                if let Some(symbol) = self.extract_export_symbol(node, source) {
+                    events.push(StructuralEvent::export(symbol, start, end)?);
+                }
+            }
+            _ => {}
         }
 
         Ok(())
@@ -151,19 +156,27 @@ impl TreeSitterAdapter {
         is_function: bool,
         is_block: bool,
     ) -> Result<(), DomainError> {
-        let start_byte = node.start_byte() as u32;
-        let end_byte = node.end_byte() as u32;
-
-        if is_block {
-            let start = BytePos::new(start_byte)?;
-            let end = BytePos::new(end_byte)?;
-            events.push(StructuralEvent::block_exit(start, end)?);
+        if !is_function && !is_block {
+            return Ok(());
         }
 
-        if is_function {
-            let start = BytePos::new(start_byte)?;
-            let end = BytePos::new(end_byte)?;
-            events.push(StructuralEvent::function_end(start, end)?);
+        let start_byte = node.start_byte() as u32;
+        let end_byte = node.end_byte() as u32;
+        let start = BytePos::new(start_byte)?;
+        let end = BytePos::new(end_byte)?;
+
+        match (is_block, is_function) {
+            (true, true) => {
+                events.push(StructuralEvent::block_exit(start, end)?);
+                events.push(StructuralEvent::function_end(start, end)?);
+            }
+            (true, false) => {
+                events.push(StructuralEvent::block_exit(start, end)?);
+            }
+            (false, true) => {
+                events.push(StructuralEvent::function_end(start, end)?);
+            }
+            (false, false) => {}
         }
 
         Ok(())
@@ -234,37 +247,39 @@ impl TreeSitterAdapter {
         let mut distribution = SymbolDistribution::with_capacity(128);
         let mut cursor = tree.walk();
 
-        self.walk_for_entropy(&mut distribution, &mut cursor, source.as_bytes())?;
+        self.walk_for_entropy_iterative(&mut distribution, &mut cursor, source.as_bytes())?;
 
         Ok(distribution)
     }
 
-    fn walk_for_entropy(
+    fn walk_for_entropy_iterative(
         &self,
         distribution: &mut SymbolDistribution,
         cursor: &mut tree_sitter::TreeCursor,
-        source: &[u8],
+        _source: &[u8],
     ) -> Result<(), DomainError> {
+        let mut stack: Vec<tree_sitter::Node> = Vec::new();
+
         loop {
             let node = cursor.node();
             let kind = node.kind();
 
-            // Collect valid structural symbols
             if Self::is_valid_symbol(kind) {
                 distribution.insert(kind.to_string());
             }
 
             if cursor.goto_first_child() {
-                self.walk_for_entropy(distribution, cursor, source)?;
-                cursor.goto_parent();
+                stack.push(node);
+                continue;
             }
 
-            if !cursor.goto_next_sibling() {
-                break;
+            while !cursor.goto_next_sibling() {
+                match stack.pop() {
+                    Some(parent_node) => cursor.reset(parent_node),
+                    None => return Ok(()),
+                }
             }
         }
-
-        Ok(())
     }
 
     /// Check if a node kind is a valid structural symbol
@@ -411,6 +426,88 @@ impl LanguageSpec {
             export_nodes: &["def"],
         }
     }
+
+    pub fn java() -> Self {
+        Self {
+            function_nodes: &[
+                "method_declaration",
+                "constructor_declaration",
+                "class_declaration",
+                "lambda_expression",
+            ],
+            branch_nodes: &[
+                "if_statement",
+                "while_statement",
+                "for_statement",
+                "do_statement",
+                "switch_statement",
+                "try_statement",
+                "catch_clause",
+                "ternary_expression",
+            ],
+            block_nodes: &["block"],
+            import_nodes: &["import_declaration"],
+            export_nodes: &[
+                "class_declaration",
+                "interface_declaration",
+                "method_declaration",
+            ],
+        }
+    }
+
+    pub fn csharp() -> Self {
+        Self {
+            function_nodes: &[
+                "method_declaration",
+                "constructor_declaration",
+                "class_declaration",
+                "struct_declaration",
+                "lambda_expression",
+                "local_function_statement",
+            ],
+            branch_nodes: &[
+                "if_statement",
+                "while_statement",
+                "for_statement",
+                "foreach_statement",
+                "switch_statement",
+                "try_statement",
+                "catch_clause",
+                "ternary_expression",
+            ],
+            block_nodes: &["block", "switch_body"],
+            import_nodes: &["using_directive"],
+            export_nodes: &[
+                "class_declaration",
+                "struct_declaration",
+                "interface_declaration",
+                "method_declaration",
+                "delegate_declaration",
+            ],
+        }
+    }
+
+    pub fn cpp() -> Self {
+        Self {
+            function_nodes: &[
+                "function_definition",
+                "method_definition",
+                "lambda_expression",
+                "class_specifier",
+            ],
+            branch_nodes: &[
+                "if_statement",
+                "while_statement",
+                "for_statement",
+                "switch_statement",
+                "try_statement",
+                "catch_clause",
+            ],
+            block_nodes: &["compound_statement"],
+            import_nodes: &[],
+            export_nodes: &["function_definition", "class_specifier", "struct_specifier"],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -458,6 +555,52 @@ mod tests {
     fn parse_python_function() {
         let mut adapter = TreeSitterAdapter::new(LanguageId::Python).unwrap();
         let text = SourceText::new("def hello():\n    if True:\n        pass".to_string()).unwrap();
+
+        let events = adapter.parse_to_events(&text);
+        assert!(events.is_ok());
+
+        let events = events.unwrap();
+        let has_function = events.iter().any(|e| e.is_function_start());
+        assert!(has_function);
+    }
+
+    #[test]
+    fn adapter_creation_java() {
+        let adapter = TreeSitterAdapter::new(LanguageId::Java);
+        assert!(adapter.is_ok());
+    }
+
+    #[test]
+    fn adapter_creation_csharp() {
+        let adapter = TreeSitterAdapter::new(LanguageId::CSharp);
+        assert!(adapter.is_ok());
+    }
+
+    #[test]
+    fn parse_java_class() {
+        let mut adapter = TreeSitterAdapter::new(LanguageId::Java).unwrap();
+        let text = SourceText::new(
+            "public class Test {\n    public void foo() {\n        if (true) { }\n    }\n}"
+                .to_string(),
+        )
+        .unwrap();
+
+        let events = adapter.parse_to_events(&text);
+        assert!(events.is_ok());
+
+        let events = events.unwrap();
+        let has_function = events.iter().any(|e| e.is_function_start());
+        assert!(has_function);
+    }
+
+    #[test]
+    fn parsecsharp_class() {
+        let mut adapter = TreeSitterAdapter::new(LanguageId::CSharp).unwrap();
+        let text = SourceText::new(
+            "public class Test {\n    public void Foo() {\n        if (true) { }\n    }\n}"
+                .to_string(),
+        )
+        .unwrap();
 
         let events = adapter.parse_to_events(&text);
         assert!(events.is_ok());

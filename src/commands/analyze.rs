@@ -1,7 +1,8 @@
 use colored::*;
 use mete::{AnalysisService, AnalyzeRequest, DomainError, WantFlags};
+use rayon::prelude::*;
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 
 pub fn run_analyze(
     path: &str,
@@ -105,6 +106,85 @@ fn analyze_file(path: &Path, language: Option<&str>, quiet: bool) -> Vec<FileRes
     results
 }
 
+/// Parallel file analysis function for use with rayon
+fn analyze_file_parallel(path: &Path, language: Option<&str>, quiet: bool) -> Option<FileResult> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => {
+            if !quiet {
+                eprintln!(
+                    "{} {}",
+                    "Error reading file".red(),
+                    path.display().to_string().dimmed()
+                );
+            }
+            return None;
+        }
+    };
+
+    if text.is_empty() {
+        return None;
+    }
+
+    let lang = language.unwrap_or_else(|| detect_language(path));
+    let request = match build_request(&text, lang) {
+        Ok(req) => req,
+        Err(e) => {
+            if !quiet {
+                eprintln!(
+                    "{} {}: {}",
+                    "Analysis failed".yellow(),
+                    path.display().to_string().dimmed(),
+                    e
+                );
+            }
+            return None;
+        }
+    };
+
+    match AnalysisService::analyze(request) {
+        Ok(response) => {
+            if let Some(file_metrics) = response.file {
+                let file_result =
+                    FileResult::from(path, file_metrics, response.duplicates.unwrap_or_default());
+                Some(file_result)
+            } else {
+                None
+            }
+        }
+        Err(e) => {
+            if !quiet {
+                eprintln!(
+                    "{} {}: {}",
+                    "Analysis failed".yellow(),
+                    path.display().to_string().dimmed(),
+                    e
+                );
+            }
+            None
+        }
+    }
+}
+
+fn detect_language(path: &Path) -> &str {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| match ext {
+            "rs" => "rust",
+            "ts" | "tsx" => "typescript",
+            "js" | "jsx" => "javascript",
+            "py" => "python",
+            "go" => "go",
+            "java" => "java",
+            "cs" => "csharp",
+            "ex" | "exs" => "elixir",
+            "cpp" | "cc" | "cxx" | "hpp" | "h" => "cpp",
+            "c" => "c",
+            _ => "rust",
+        })
+        .unwrap_or("rust")
+}
+
 fn analyze_directory(
     dir: &Path,
     language: Option<&str>,
@@ -122,68 +202,32 @@ fn analyze_directory(
         }
     };
 
-    let mut results: Vec<FileResult> = Vec::new();
+    let file_paths: Vec<_> = entries
+        .filter_map(|entry| match entry {
+            Ok(path) if path.is_file() && !is_skippable(&path) => Some(path),
+            _ => None,
+        })
+        .collect();
 
-    for entry in entries {
-        match entry {
-            Ok(path) if path.is_file() => {
-                let lang = language.unwrap_or_else(|| detect_language(&path));
-                let Some(request) = build_request_from_path(&path, lang) else {
-                    continue;
-                };
-
-                match AnalysisService::analyze(request) {
-                    Ok(response) => {
-                        if let Some(file_metrics) = response.file {
-                            let file_result = FileResult::from(
-                                &path,
-                                file_metrics,
-                                response.duplicates.unwrap_or_default(),
-                            );
-                            results.push(file_result);
-                        }
-                    }
-                    Err(e) => {
-                        if !quiet {
-                            eprintln!(
-                                "{} {}: {}",
-                                "Analysis failed".yellow(),
-                                path.display().to_string().dimmed(),
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                if !quiet {
-                    eprintln!("{} {}", "Error reading entry".yellow(), e);
-                }
-            }
-        }
+    if file_paths.is_empty() {
+        return Vec::new();
     }
 
-    results
+    file_paths
+        .par_iter()
+        .filter_map(|path| analyze_file_parallel(path, language, quiet))
+        .collect()
 }
 
-fn detect_language(path: &Path) -> &str {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| match ext {
-            "rs" => "rust",
-            "ts" | "tsx" => "typescript",
-            "js" | "jsx" => "javascript",
-            "py" => "python",
-            "go" => "go",
-            "java" => "java",
-            "cs" => "c_sharp",
-            "cpp" | "cc" | "cxx" => "cpp",
-            "c" => "c",
-            "ex" | "exs" => "elixir",
-            _ => "rust",
-        })
-        .unwrap_or("rust")
+fn is_skippable(path: &Path) -> bool {
+    // Skip node_modules and other non-source files
+    path.components().any(|c| {
+        if let Component::Normal(s) = c {
+            s == "node_modules" || s == "dist" || s == "build" || s == ".next" || s == ".cache"
+        } else {
+            false
+        }
+    })
 }
 
 fn build_request(text: &str, language: &str) -> Result<AnalyzeRequest, DomainError> {
@@ -193,17 +237,6 @@ fn build_request(text: &str, language: &str) -> Result<AnalyzeRequest, DomainErr
         None,
         WantFlags::all(),
     )
-}
-
-fn build_request_from_path(path: &Path, language: &str) -> Option<AnalyzeRequest> {
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(_) => return None,
-    };
-    if text.is_empty() {
-        return None;
-    }
-    build_request(&text, language).ok()
 }
 
 fn apply_filters(
@@ -228,56 +261,20 @@ fn apply_filters(
 fn sort_results(results: &[FileResult], sort_by: &str, sort_order: &str) -> Vec<FileResult> {
     let mut sorted: Vec<FileResult> = results.to_vec();
 
-    match sort_by {
-        "mi" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.metrics.mi.partial_cmp(&a.metrics.mi).unwrap()
-            } else {
-                a.metrics.mi.partial_cmp(&b.metrics.mi).unwrap()
-            }
-        }),
-        "cc" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.metrics.cc_max.cmp(&a.metrics.cc_max)
-            } else {
-                a.metrics.cc_max.cmp(&b.metrics.cc_max)
-            }
-        }),
-        "loc" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.metrics.loc.cmp(&a.metrics.loc)
-            } else {
-                a.metrics.loc.cmp(&b.metrics.loc)
-            }
-        }),
-        "depth" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.metrics.depth_max.cmp(&a.metrics.depth_max)
-            } else {
-                a.metrics.depth_max.cmp(&b.metrics.depth_max)
-            }
-        }),
-        "functions" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.metrics.functions_count.cmp(&a.metrics.functions_count)
-            } else {
-                a.metrics.functions_count.cmp(&b.metrics.functions_count)
-            }
-        }),
-        "dups" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.metrics.dup_blocks.cmp(&a.metrics.dup_blocks)
-            } else {
-                a.metrics.dup_blocks.cmp(&b.metrics.dup_blocks)
-            }
-        }),
-        "path" | _ => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.filename.cmp(&a.filename)
-            } else {
-                a.filename.cmp(&b.filename)
-            }
-        }),
+    let cmp = |a: &FileResult, b: &FileResult| match sort_by {
+        "mi" => a.metrics.mi.partial_cmp(&b.metrics.mi).unwrap(),
+        "cc" => a.metrics.cc_max.cmp(&b.metrics.cc_max),
+        "loc" => a.metrics.loc.cmp(&b.metrics.loc),
+        "depth" => a.metrics.depth_max.cmp(&b.metrics.depth_max),
+        "functions" => a.metrics.functions_count.cmp(&b.metrics.functions_count),
+        "dups" => a.metrics.dup_blocks.cmp(&b.metrics.dup_blocks),
+        "path" | _ => a.filename.cmp(&b.filename),
+    };
+
+    if sort_order == "desc" {
+        sorted.par_sort_unstable_by(|a, b| cmp(b, a));
+    } else {
+        sorted.par_sort_unstable_by(cmp);
     }
 
     sorted
@@ -345,47 +342,13 @@ fn display_table(results: &[FileResult], threshold: Option<f64>) {
     for result in results {
         let m = &result.metrics;
 
-        let mi_color = if m.mi >= 85.0 {
-            "green"
-        } else if m.mi >= 65.0 {
-            "yellow"
-        } else {
-            "red"
-        };
-
-        let cc_color = if m.cc_max <= 5 {
-            "green"
-        } else if m.cc_max <= 10 {
-            "yellow"
-        } else {
-            "red"
-        };
-
-        let cognitive_color = if m.cognitive_max <= 8 {
-            "green"
-        } else if m.cognitive_max <= 15 {
-            "yellow"
-        } else {
-            "red"
-        };
-
-        let depth_color = if m.depth_max <= 3 {
-            "green"
-        } else if m.depth_max <= 5 {
-            "yellow"
-        } else {
-            "red"
-        };
-
-        let cc_str = format!("{}", m.cc_max);
-        let cognitive_str = format!("{}", m.cognitive_max);
-        let mi_str = format!("{:.1}", m.mi);
-        let depth_str = format!("{}", m.depth_max);
-
-        let mi_colored = colorize(&mi_str, mi_color);
-        let cc_colored = colorize(&cc_str, cc_color);
-        let cognitive_colored = colorize(&cognitive_str, cognitive_color);
-        let depth_colored = colorize(&depth_str, depth_color);
+        let mi_colored = colorize(&format!("{:.1}", m.mi), mi_color(m.mi));
+        let cc_colored = colorize(&m.cc_max.to_string(), cc_color(m.cc_max));
+        let cognitive_colored = colorize(
+            &m.cognitive_max.to_string(),
+            cognitive_color(m.cognitive_max),
+        );
+        let depth_colored = colorize(&m.depth_max.to_string(), depth_color(m.depth_max));
 
         let name: String = result.filename.chars().take(52).collect();
 
@@ -506,48 +469,15 @@ fn display_summary(results: &[FileResult]) {
 
 fn display_summary_row(aggs: &Aggregates) {
     let mi = aggs.avg_mi;
-    let mi_color = if mi >= 85.0 {
-        "green"
-    } else if mi >= 65.0 {
-        "yellow"
-    } else {
-        "red"
-    };
-
     let cc = aggs.avg_cc_max;
-    let cc_color = if cc <= 5.0 {
-        "green"
-    } else if cc <= 10.0 {
-        "yellow"
-    } else {
-        "red"
-    };
-
     let cognitive = aggs.avg_cognitive_max;
-    let cognitive_color = if cognitive <= 8.0 {
-        "green"
-    } else if cognitive <= 15.0 {
-        "yellow"
-    } else {
-        "red"
-    };
 
-    let depth = aggs.avg_depth;
-    let _depth_color = if depth <= 3.0 {
-        "green"
-    } else if depth <= 5.0 {
-        "yellow"
-    } else {
-        "red"
-    };
-
-    let mi_colored = format!("{:.1}", mi);
-    let cc_colored = format!("{:.1}", cc);
-    let cognitive_colored = format!("{:.1}", cognitive);
-
-    let mi_formatted = colorize(&mi_colored, mi_color);
-    let cc_formatted = colorize(&cc_colored, cc_color);
-    let cognitive_formatted = colorize(&cognitive_colored, cognitive_color);
+    let mi_formatted = colorize(&format!("{:.1}", mi), mi_color(mi));
+    let cc_formatted = colorize(&format!("{:.1}", cc), cc_color(cc as u32));
+    let cognitive_formatted = colorize(
+        &format!("{:.1}", cognitive),
+        cognitive_color(cognitive as u32),
+    );
 
     println!(
         "{}  {}  {}  {}  {}  {}  {}  {}  {}  {}  {}",
@@ -574,10 +504,40 @@ fn colorize(text: &str, color: &str) -> ColoredString {
     }
 }
 
-fn compute_aggregates(results: &[FileResult]) -> Aggregates {
-    let count = results.len() as f64;
+fn mi_color(mi: f64) -> &'static str {
+    match mi {
+        m if m >= 85.0 => "green",
+        m if m >= 65.0 => "yellow",
+        _ => "red",
+    }
+}
 
-    if count == 0.0 {
+fn cc_color(cc: u32) -> &'static str {
+    match cc {
+        c if c <= 5 => "green",
+        c if c <= 10 => "yellow",
+        _ => "red",
+    }
+}
+
+fn cognitive_color(cog: u32) -> &'static str {
+    match cog {
+        c if c <= 8 => "green",
+        c if c <= 15 => "yellow",
+        _ => "red",
+    }
+}
+
+fn depth_color(depth: u32) -> &'static str {
+    match depth {
+        d if d <= 3 => "green",
+        d if d <= 5 => "yellow",
+        _ => "red",
+    }
+}
+
+fn compute_aggregates(results: &[FileResult]) -> Aggregates {
+    if results.is_empty() {
         return Aggregates {
             total_loc: 0,
             avg_cc_max: 0.0,
@@ -589,34 +549,33 @@ fn compute_aggregates(results: &[FileResult]) -> Aggregates {
         };
     }
 
-    let total_loc: u32 = results.iter().map(|r| r.metrics.loc).sum();
-    let avg_cc_max: f64 = results.iter().map(|r| r.metrics.cc_max as f64).sum::<f64>() / count;
-    let avg_cognitive_max: f64 = results
-        .iter()
-        .map(|r| r.metrics.cognitive_max as f64)
-        .sum::<f64>()
-        / count;
-    let total_mi: f64 = results.iter().map(|r| r.metrics.mi).sum::<f64>();
-    let avg_depth: f64 = results
-        .iter()
-        .map(|r| r.metrics.depth_max as f64)
-        .sum::<f64>()
-        / count;
-    let total_dups: u32 = results.iter().map(|r| r.metrics.dup_blocks).sum();
-    let avg_functions: f64 = results
-        .iter()
-        .map(|r| r.metrics.functions_count as f64)
-        .sum::<f64>()
-        / count;
+    let mut total_loc = 0;
+    let mut total_cc_max = 0;
+    let mut total_cognitive_max = 0;
+    let mut total_mi = 0.0;
+    let mut total_depth = 0;
+    let mut total_dups = 0;
+    let mut total_functions = 0;
 
+    for r in results {
+        total_loc += r.metrics.loc;
+        total_cc_max += r.metrics.cc_max;
+        total_cognitive_max += r.metrics.cognitive_max;
+        total_mi += r.metrics.mi;
+        total_depth += r.metrics.depth_max;
+        total_dups += r.metrics.dup_blocks;
+        total_functions += r.metrics.functions_count;
+    }
+
+    let count = results.len() as f64;
     Aggregates {
         total_loc,
-        avg_cc_max,
-        avg_cognitive_max,
+        avg_cc_max: total_cc_max as f64 / count,
+        avg_cognitive_max: total_cognitive_max as f64 / count,
         avg_mi: total_mi / count,
-        avg_depth,
+        avg_depth: total_depth as f64 / count,
         total_dups,
-        avg_functions,
+        avg_functions: total_functions as f64 / count,
     }
 }
 

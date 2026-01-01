@@ -47,11 +47,11 @@ pub enum Commands {
         #[arg(long)]
         threshold: Option<f64>,
 
-        /// Sort by field (mi, cc, loc, depth, functions, dups)
-        #[arg(short, long, default_value = "path")]
+        /// Sort by field (mi, cc, loc, depth, functions, dups, path)
+        #[arg(short, long, default_value = "mi")]
         sort_by: String,
 
-        /// Sort order
+        /// Sort order (asc = worst first for MI)
         #[arg(long, default_value = "asc")]
         sort_order: String,
 
@@ -102,12 +102,12 @@ pub enum Commands {
         #[arg(long)]
         min_loc: Option<u32>,
 
-        /// Sort by field (name, loc, cc, depth)
-        #[arg(short, long, default_value = "path")]
+        /// Sort by field (cc, loc, depth, name, path)
+        #[arg(short, long, default_value = "cc")]
         sort_by: String,
 
-        /// Sort order
-        #[arg(long, default_value = "asc")]
+        /// Sort order (desc = worst first for CC)
+        #[arg(long, default_value = "desc")]
         sort_order: String,
 
         /// Output format
@@ -405,9 +405,9 @@ format = "table"
 # threshold = 70.0
 
 # Default sort field for analyze: path, mi, cc, loc, depth, functions, dups
-sort_by = "path"
+sort_by = "mi"
 
-# Default sort order: asc, desc
+# Default sort order: asc, desc (asc for MI = worst first)
 sort_order = "asc"
 
 # Maximum complexity to show (0 = no limit)
