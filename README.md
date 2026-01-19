@@ -53,11 +53,9 @@ claude mcp add mete -- mete mcp
 
 ### Cursor
 
-One-click install (paste in browser):
-
-```
-cursor://anysphere.cursor-deeplink/mcp/install?name=mete&config=eyJjb21tYW5kIjoibWV0ZSIsImFyZ3MiOlsibWNwIl19
-```
+<a href="https://dutch-casa.github.io/mete.rs/cursor.html">
+  <img src="https://img.shields.io/badge/Add_to-Cursor-000000?style=for-the-badge&logo=cursor&logoColor=white" alt="Add to Cursor">
+</a>
 
 Or manually add to `~/.cursor/mcp.json`:
 
