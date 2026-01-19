@@ -1,6 +1,89 @@
 use clap::{Parser, Subcommand};
 use colored::*;
 
+struct MetricInfo {
+    title: &'static str,
+    desc: &'static str,
+    levels: &'static [(&'static str, &'static str, u8)], // (range, label, color: 0=green,1=yellow,2=red)
+    notes: &'static [&'static str],
+}
+
+impl MetricInfo {
+    fn lookup(key: &str) -> Option<Self> {
+        Some(match key {
+            "mi" | "maintainability" | "maintainability-index" => Self {
+                title: "Maintainability Index (MI)",
+                desc: "Measures code maintainability on a scale of 0-100.\n  Higher values indicate easier to maintain code.",
+                levels: &[("85-100", "Excellent", 0), ("65-84", "Good", 1), ("50-64", "Moderate", 2), ("0-49", "Poor", 2)],
+                notes: &["Calculated from: cyclomatic complexity, LOC, Halstead volume"],
+            },
+            "cc" | "cyclomatic" | "cyclomatic-complexity" => Self {
+                title: "Cyclomatic Complexity (CC)",
+                desc: "Measures linearly independent paths through code.\n  Lower values indicate simpler, easier to test code.",
+                levels: &[("1-5", "Simple", 0), ("6-10", "Moderate", 1), ("11-20", "Complex", 2), ("21+", "Very Complex", 2)],
+                notes: &["Each branch (if, for, while) adds 1. Base is 1."],
+            },
+            "loc" | "lines" => Self {
+                title: "Lines of Code (LOC)",
+                desc: "Count of physical lines in source file.",
+                levels: &[("1-25", "Small", 0), ("26-50", "Medium", 1), ("51-100", "Large", 2), ("101+", "Very Large", 2)],
+                notes: &[],
+            },
+            "depth" | "nesting" => Self {
+                title: "Nesting Depth",
+                desc: "Maximum nesting level of control structures.\n  Lower values indicate flatter, more readable code.",
+                levels: &[("1-2", "Flat", 0), ("3-4", "Moderate", 1), ("5-6", "Deep", 2), ("7+", "Very Deep", 2)],
+                notes: &[],
+            },
+            "dup" | "duplicates" | "duplication" => Self {
+                title: "Code Duplication",
+                desc: "Identifies structurally similar code blocks.\n  Duplication increases maintenance burden.",
+                levels: &[("0%", "None", 0), ("1-3%", "Low", 1), ("4-6%", "Moderate", 2), ("7%+", "High", 2)],
+                notes: &["Ratio = duplicate_blocks / total_loc"],
+            },
+            "fan" | "fan-in" | "fan-out" => Self {
+                title: "Fan-in / Fan-out",
+                desc: "Fan-in: modules importing this. Fan-out: modules this imports.",
+                levels: &[("I > O", "Stable", 0), ("O > I", "Volatile", 2)],
+                notes: &["Stability = fan_out / (fan_in + fan_out)"],
+            },
+            _ => return None,
+        })
+    }
+
+    fn print(&self) {
+        println!("{}", self.title.cyan().bold());
+        println!();
+        for line in self.desc.lines() {
+            println!("  {}", line);
+        }
+        println!();
+        for (range, label, color) in self.levels {
+            let dot = match color {
+                0 => "●".green(),
+                1 => "●".yellow(),
+                _ => "●".red(),
+            };
+            println!("  {} {:7} {}", dot, range, label);
+        }
+        if !self.notes.is_empty() {
+            println!();
+            for note in self.notes {
+                println!("  {}", note);
+            }
+        }
+    }
+}
+
+const DEFAULT_CONFIG: &str = r#"# Mete configuration
+pattern = "**/*"
+format = "table"
+sort_by = "mi"
+sort_order = "asc"
+verbose = false
+quiet = false
+"#;
+
 /// Structural metrics engine - analyze code quality with joy
 #[derive(Parser, Debug)]
 #[command(name = "mete")]
@@ -47,7 +130,7 @@ pub enum Commands {
         #[arg(long)]
         threshold: Option<f64>,
 
-        /// Sort by field (mi, cc, loc, depth, functions, dups, path)
+        /// Sort by field (mi, cc, cog, loc, depth, functions, dups, path)
         #[arg(short, long, default_value = "mi")]
         sort_by: String,
 
@@ -66,6 +149,33 @@ pub enum Commands {
         /// Output format
         #[arg(short, long, default_value = "table", value_parser = ["table", "json", "csv", "summary"])]
         format: String,
+
+        /// Show Maintainability Index (hidden by default)
+        #[arg(long)]
+        mi: bool,
+    },
+
+    /// AI-friendly refactoring targets (prioritized by impact)
+    Targets {
+        /// Source file or directory to analyze
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// Programming language (auto-detect if not provided)
+        #[arg(short, long)]
+        language: Option<String>,
+
+        /// File pattern for directories
+        #[arg(short, long, default_value = "**/*")]
+        pattern: String,
+
+        /// Maximum targets to return
+        #[arg(short, long, default_value = "20")]
+        limit: usize,
+
+        /// Minimum complexity threshold
+        #[arg(long, default_value = "5")]
+        min_cc: u32,
     },
 
     /// Show detailed function-level metrics
@@ -102,7 +212,7 @@ pub enum Commands {
         #[arg(long)]
         min_loc: Option<u32>,
 
-        /// Sort by field (cc, loc, depth, name, path)
+        /// Sort by field (cc, cog, loc, depth, name, path)
         #[arg(short, long, default_value = "cc")]
         sort_by: String,
 
@@ -140,6 +250,22 @@ pub enum Commands {
         /// Output format
         #[arg(short, long, default_value = "table", value_parser = ["table", "json", "csv"])]
         format: String,
+
+        /// Similarity threshold for cross-file duplicates (0.0-1.0)
+        #[arg(short, long)]
+        threshold: Option<f32>,
+
+        /// Enable cross-file duplicate detection
+        #[arg(long)]
+        cross_file: bool,
+
+        /// Minimum lines of code to consider (filters trivial functions)
+        #[arg(long, default_value = "5")]
+        min_loc: u32,
+
+        /// Include anonymous functions/closures (excluded by default)
+        #[arg(long)]
+        include_anonymous: bool,
     },
 
     /// Show metrics explanation
@@ -178,6 +304,10 @@ pub enum Commands {
         #[arg(short, long, default_value = ".mete.toml")]
         path: String,
     },
+
+    /// Run as MCP server (stdio transport)
+    #[cfg(feature = "mcp")]
+    Mcp {},
 }
 
 pub struct CliRunner {
@@ -211,6 +341,7 @@ impl CliRunner {
                 max_complexity,
                 max_depth,
                 format,
+                mi,
             }) => analyze::run_analyze(
                 path,
                 language.as_deref(),
@@ -221,7 +352,22 @@ impl CliRunner {
                 *max_complexity,
                 *max_depth,
                 format,
+                *mi,
                 self.cli.verbose,
+                self.cli.quiet,
+            ),
+            Some(Commands::Targets {
+                path,
+                language,
+                pattern,
+                limit,
+                min_cc,
+            }) => targets::run_targets(
+                path,
+                language.as_deref(),
+                pattern,
+                *limit,
+                *min_cc,
                 self.cli.quiet,
             ),
             Some(Commands::Functions {
@@ -258,6 +404,10 @@ impl CliRunner {
                 min_instances,
                 show_code,
                 format,
+                threshold,
+                cross_file,
+                min_loc,
+                include_anonymous,
             }) => duplicates::run_duplicates(
                 path,
                 language.as_deref(),
@@ -265,6 +415,10 @@ impl CliRunner {
                 *min_instances,
                 *show_code,
                 format,
+                *threshold,
+                *cross_file,
+                *min_loc,
+                *include_anonymous,
                 self.cli.verbose,
                 self.cli.quiet,
             ),
@@ -283,6 +437,11 @@ impl CliRunner {
                 self.cli.verbose,
                 self.cli.quiet,
             ),
+            #[cfg(feature = "mcp")]
+            Some(Commands::Mcp {}) => {
+                // Handled in main.rs before run() is called
+                unreachable!("MCP command should be handled in main()")
+            }
             None => {
                 eprintln!("{}", "Error: command required".red());
                 self.print_help();
@@ -292,140 +451,34 @@ impl CliRunner {
     }
 
     fn explain(&self, metric: &Option<String>) {
-        match metric.as_deref() {
-            Some("mi") | Some("maintainability") | Some("maintainability-index") => {
-                println!("{}", "Maintainability Index (MI)".cyan().bold());
-                println!();
-                println!("  Measures code maintainability on a scale of 0-100.");
-                println!("  Higher values indicate easier to maintain code.");
-                println!();
-                println!("  {} 85-100: Excellent", "●".green());
-                println!("  {} 65-84:  Good", "●".yellow());
-                println!("  {} 50-64:  Moderate", "●".bright_red());
-                println!("  {} 0-49:   Poor", "●".red());
-                println!();
-                println!("  Calculated from:");
-                println!("    - Cyclomatic complexity");
-                println!("    - Lines of code");
-                println!("    - Halstead volume");
-            }
-            Some("cc") | Some("cyclomatic") | Some("cyclomatic-complexity") => {
-                println!("{}", "Cyclomatic Complexity (CC)".cyan().bold());
-                println!();
-                println!("  Measures number of linearly independent paths through code.");
-                println!("  Lower values indicate simpler, easier to test code.");
-                println!();
-                println!("  {} 1-5:   Simple", "●".green());
-                println!("  {} 6-10:  Moderate", "●".yellow());
-                println!("  {} 11-20: Complex", "●".bright_red());
-                println!("  {} 21+:   Very Complex", "●".red());
-                println!();
-                println!("  Each branch (if, for, while, etc.) increments complexity by 1.");
-                println!("  Base complexity is 1 for any function.");
-            }
-            Some("loc") | Some("lines") => {
-                println!("{}", "Lines of Code (LOC)".cyan().bold());
-                println!();
-                println!("  Count of physical lines in source file.");
-                println!("  Lower values generally correlate with easier maintenance.");
-                println!();
-                println!("  Function-level metrics:");
-                println!("    {} 1-25:   Small", "●".green());
-                println!("    {} 26-50:  Medium", "●".yellow());
-                println!("    {} 51-100: Large", "●".bright_red());
-                println!("    {} 101+:   Very Large", "●".red());
-            }
-            Some("depth") | Some("nesting") => {
-                println!("{}", "Nesting Depth".cyan().bold());
-                println!();
-                println!("  Maximum nesting level of control structures.");
-                println!("  Lower values indicate flatter, more readable code.");
-                println!();
-                println!("  {} 1-2:   Flat", "●".green());
-                println!("  {} 3-4:   Moderate", "●".yellow());
-                println!("  {} 5-6:   Deep", "●".bright_red());
-                println!("  {} 7+:    Very Deep", "●".red());
-            }
-            Some("dup") | Some("duplicates") | Some("duplication") => {
-                println!("{}", "Code Duplication".cyan().bold());
-                println!();
-                println!("  Identifies structurally similar code blocks.");
-                println!("  Duplication increases maintenance burden.");
-                println!();
-                println!("  {} 0%:    No Duplication", "●".green());
-                println!("    {} 1-3%:  Low", "●".yellow());
-                println!("    {} 4-6%:  Moderate", "●".bright_red());
-                println!("    {} 7%+:   High", "●".red());
-                println!();
-                println!("  Duplication ratio = duplicate_blocks / total_loc");
-            }
-            Some("fan") | Some("fan-in") | Some("fan-out") => {
-                println!("{}", "Fan-in / Fan-out".cyan().bold());
-                println!();
-                println!("  Fan-in:  Number of modules that import this module");
-                println!("  Fan-out: Number of modules that this module imports");
-                println!();
-                println!("  Stability index = fan_out / (fan_in + fan_out)");
-                println!();
-                println!("  {} Stable (I > O): Less likely to change", "●".green());
-                println!("    {} Volatile (O > I): More likely to change", "●".red());
-            }
-            None | Some(_) => {
-                println!("{}", "Code Quality Metrics".cyan().bold());
-                println!();
-                println!("  {} maintainability-index", "mi".green());
-                println!("  {} cyclomatic-complexity", "cc".green());
-                println!("  {} lines-of-code", "loc".green());
-                println!("  {} nesting-depth", "depth".green());
-                println!("  {} code-duplication", "dup".green());
-                println!("  {} fan-in-fan-out", "fan".green());
-                println!();
-                println!(
-                    "  Run {} for details on any metric.",
-                    "`mete explain <metric>`".cyan()
-                );
-            }
+        let info = metric.as_deref().and_then(MetricInfo::lookup);
+        match info {
+            Some(m) => m.print(),
+            None => Self::print_metric_list(),
         }
     }
 
+    fn print_metric_list() {
+        println!("{}", "Code Quality Metrics".cyan().bold());
+        println!();
+        for (short, long) in [
+            ("mi", "maintainability-index"),
+            ("cc", "cyclomatic-complexity"),
+            ("loc", "lines-of-code"),
+            ("depth", "nesting-depth"),
+            ("dup", "code-duplication"),
+            ("fan", "fan-in-fan-out"),
+        ] {
+            println!("  {} {}", short.green(), long);
+        }
+        println!();
+        println!("  Run {} for details.", "`mete explain <metric>`".cyan());
+    }
+
     fn init_config(&self, path: &str) {
-        let config = r#"# Mete configuration file
-# Generated by mete init
-
-# Default language (comment out to auto-detect)
-# language = "rust"
-
-# Default file pattern for directories
-pattern = "**/*"
-
-# Output format: table, json, csv, summary
-format = "table"
-
-# Only show files with MI below threshold
-# threshold = 70.0
-
-# Default sort field for analyze: path, mi, cc, loc, depth, functions, dups
-sort_by = "mi"
-
-# Default sort order: asc, desc (asc for MI = worst first)
-sort_order = "asc"
-
-# Maximum complexity to show (0 = no limit)
-# max_complexity = 10
-
-# Maximum nesting depth to show (0 = no limit)
-# max_depth = 5
-
-# Verbose output
-verbose = false
-
-# Suppress non-error output
-quiet = false
-"#;
-
-        match std::fs::write(path, config) {
-            Ok(_) => println!("{} {}", "Created configuration file:".green(), path),
-            Err(e) => eprintln!("{} {}: {}", "Failed to create config file".red(), path, e),
+        match std::fs::write(path, DEFAULT_CONFIG) {
+            Ok(_) => println!("{} {}", "Created:".green(), path),
+            Err(e) => eprintln!("{} {}: {}", "Failed:".red(), path, e),
         }
     }
 
@@ -433,17 +486,16 @@ quiet = false
         println!("{}", "Usage: mete [OPTIONS] <COMMAND>".cyan());
         println!();
         println!("Commands:");
-        println!(
-            "  {}       Analyze files and directories",
-            "analyze".green()
-        );
-        println!(
-            "  {}    Show detailed function-level metrics",
-            "functions".green()
-        );
-        println!("  {}    Find duplicate code blocks", "duplicates".green());
-        println!("  {}        Show metrics explanation", "explain".green());
-        println!("  {}         Generate configuration file", "init".green());
+        for (cmd, desc) in [
+            ("analyze", "Analyze files and directories"),
+            ("functions", "Show function-level metrics"),
+            ("duplicates", "Find duplicate code blocks"),
+            ("entropy", "Measure structural entropy"),
+            ("explain", "Show metrics explanation"),
+            ("init", "Generate configuration file"),
+        ] {
+            println!("  {:<12} {}", cmd.green(), desc);
+        }
         println!();
         println!("Run {} for more information.", "`mete help`".cyan());
     }

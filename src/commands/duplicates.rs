@@ -1,7 +1,12 @@
+//! Duplicates command implementation.
+
+use super::common::{analyze_directory, analyze_file};
+use mete::data::{FunctionData, SingleFileResult};
+use mete::dup::DuplicateIndex;
+use mete::lang::Language;
 use colored::*;
-use mete::{AnalysisService, AnalyzeRequest, WantFlags};
-use std::fs;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 pub fn run_duplicates(
     path: &str,
@@ -10,7 +15,11 @@ pub fn run_duplicates(
     min_instances: u32,
     show_code: bool,
     format: &str,
-    verbose: bool,
+    threshold: Option<f32>,
+    cross_file: bool,
+    min_loc: u32,
+    include_anonymous: bool,
+    _verbose: bool,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(path);
@@ -23,376 +32,298 @@ pub fn run_duplicates(
         std::process::exit(1);
     }
 
+    let lang = language.and_then(Language::from_str);
+    let similarity_threshold = threshold.unwrap_or(0.8);
+
     let results = if path.is_file() {
-        analyze_file(path, language, verbose, quiet)
+        analyze_file(path, lang, quiet)
     } else if path.is_dir() {
-        analyze_directory(path, language, pattern, verbose, quiet)
+        analyze_directory(path, lang, pattern, quiet)
     } else {
         eprintln!("{}", "Error: Path must be a file or directory".red());
         std::process::exit(1);
     };
 
-    let filtered_dups = filter_by_instances(&results, min_instances);
+    if results.is_empty() && !quiet {
+        println!("{}", "No files analyzed".yellow());
+        return Ok(());
+    }
 
-    if filtered_dups.is_empty() && !quiet {
+    let groups = if cross_file {
+        find_cross_file_duplicates(&results, similarity_threshold, min_instances, min_loc, include_anonymous)
+    } else {
+        find_within_file_duplicates(&results, min_instances, min_loc, include_anonymous)
+    };
+
+    if groups.is_empty() && !quiet {
         println!("{}", "No duplicates found".green());
         return Ok(());
     }
 
-    display_results(&filtered_dups, show_code, format, verbose, quiet);
+    if !quiet {
+        display_results(&groups, &results, show_code, format);
+    }
 
     Ok(())
 }
 
-fn analyze_file(
-    path: &Path,
-    language: Option<&str>,
-    _verbose: bool,
-    quiet: bool,
-) -> Vec<DuplicateResult> {
-    let mut results: Vec<DuplicateResult> = Vec::new();
+fn find_cross_file_duplicates(
+    results: &[SingleFileResult],
+    threshold: f32,
+    min_instances: u32,
+    min_loc: u32,
+    include_anonymous: bool,
+) -> Vec<DuplicateGroupResult> {
+    let mut index = DuplicateIndex::new(threshold);
 
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(_) => {
-            if !quiet {
-                eprintln!(
-                    "{} {}",
-                    "Error reading file".red(),
-                    path.display().to_string().dimmed()
-                );
+    for (file_idx, result) in results.iter().enumerate() {
+        for (fn_idx, func) in result.functions.iter().enumerate() {
+            if func.loc < min_loc {
+                continue;
             }
-            return results;
-        }
-    };
+            if !include_anonymous && func.name.is_none() {
+                continue;
+            }
 
-    let lang = language.unwrap_or_else(|| detect_language(path));
-    let request = build_request(&text, lang);
+            let location = mete::dup::FunctionLocation {
+                file_idx: file_idx as u32,
+                fn_idx: fn_idx as u32,
+            };
 
-    match AnalysisService::analyze(request) {
-        Ok(response) => {
-            if let Some(duplicates) = response.duplicates {
-                for dup in duplicates {
-                    results.push(DuplicateResult::from(path, dup));
-                }
-            }
-        }
-        Err(e) => {
-            if !quiet {
-                eprintln!(
-                    "{} {}: {}",
-                    "Analysis failed".yellow(),
-                    path.display().to_string().dimmed(),
-                    e
-                );
-            }
+            let tokens = vec![func.fingerprint];
+            index.add(location, func.fingerprint, &tokens);
         }
     }
 
-    results
-}
+    let groups = index.find_similar_duplicates();
 
-fn analyze_directory(
-    dir: &Path,
-    language: Option<&str>,
-    pattern: &str,
-    verbose: bool,
-    quiet: bool,
-) -> Vec<DuplicateResult> {
-    let pattern = dir.join(pattern);
-    let pattern_str = pattern.to_string_lossy().to_string();
-
-    let entries = match glob::glob(&pattern_str) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("{} {}", "Invalid pattern".red(), e);
-            return Vec::new();
-        }
-    };
-
-    let mut results: Vec<DuplicateResult> = Vec::new();
-
-    if verbose && !quiet {
-        println!("{}", "Scanning files...".dimmed());
-    }
-
-    for entry in entries {
-        match entry {
-            Ok(path) if path.is_file() => {
-                let lang = language.unwrap_or_else(|| detect_language(&path));
-                let request = build_request_from_path(&path, lang);
-
-                match AnalysisService::analyze(request) {
-                    Ok(response) => {
-                        if let Some(duplicates) = response.duplicates {
-                            for dup in duplicates {
-                                results.push(DuplicateResult::from(&path, dup));
-                            }
-
-                            if verbose && !quiet {
-                                println!("  {}", path.display().to_string().dimmed());
-                            }
-                        }
+    groups
+        .into_iter()
+        .filter(|g| g.instances.len() as u32 >= min_instances)
+        .map(|g| {
+            let instances: Vec<DuplicateInstanceResult> = g
+                .instances
+                .iter()
+                .map(|(loc, similarity)| {
+                    let result = &results[loc.file_idx as usize];
+                    let func = &result.functions[loc.fn_idx as usize];
+                    DuplicateInstanceResult {
+                        file_path: result.path.clone(),
+                        name: func.name.clone(),
+                        start_line: func.start_line,
+                        end_line: func.end_line,
+                        similarity: *similarity,
                     }
-                    Err(e) => {
-                        if !quiet {
-                            eprintln!(
-                                "{} {}: {}",
-                                "Analysis failed".yellow(),
-                                path.display().to_string().dimmed(),
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                if !quiet {
-                    eprintln!("{} {}", "Error reading entry".yellow(), e);
-                }
-            }
-        }
-    }
+                })
+                .collect();
 
-    results
-}
-
-fn detect_language(path: &Path) -> &str {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| match ext {
-            "rs" => "rust",
-            "ts" | "tsx" => "typescript",
-            "js" | "jsx" => "javascript",
-            "py" => "python",
-            "go" => "go",
-            "java" => "java",
-            "cs" => "c_sharp",
-            "cpp" | "cc" | "cxx" => "cpp",
-            "c" => "c",
-            "ex" | "exs" => "elixir",
-            _ => "rust",
+            DuplicateGroupResult {
+                fingerprint: results[g.canonical.file_idx as usize].functions[g.canonical.fn_idx as usize]
+                    .fingerprint,
+                similarity: g.similarity,
+                instances,
+            }
         })
-        .unwrap_or("rust")
-}
-
-fn build_request(text: &str, language: &str) -> AnalyzeRequest {
-    AnalyzeRequest::with_options(
-        text.to_string(),
-        language.to_string(),
-        None,
-        WantFlags::all(),
-    )
-    .unwrap_or_else(|_| AnalyzeRequest::new(text.to_string(), "rust".to_string()).unwrap())
-}
-
-fn build_request_from_path(path: &Path, language: &str) -> AnalyzeRequest {
-    let text = fs::read_to_string(path).unwrap_or_default();
-    build_request(&text, language)
-}
-
-fn filter_by_instances(results: &[DuplicateResult], min_instances: u32) -> Vec<DuplicateResult> {
-    results
-        .iter()
-        .filter(|r| r.instances.len() as u32 >= min_instances)
-        .cloned()
         .collect()
 }
 
-fn display_results(
-    results: &[DuplicateResult],
-    show_code: bool,
-    format: &str,
-    _verbose: bool,
-    quiet: bool,
-) {
-    if quiet {
-        return;
+fn find_within_file_duplicates(
+    results: &[SingleFileResult],
+    min_instances: u32,
+    min_loc: u32,
+    include_anonymous: bool,
+) -> Vec<DuplicateGroupResult> {
+    let mut all_groups: Vec<DuplicateGroupResult> = Vec::new();
+
+    for result in results {
+        let mut by_fingerprint: HashMap<u64, Vec<&FunctionData>> = HashMap::new();
+        for func in &result.functions {
+            if func.loc < min_loc {
+                continue;
+            }
+            if !include_anonymous && func.name.is_none() {
+                continue;
+            }
+            by_fingerprint.entry(func.fingerprint).or_default().push(func);
+        }
+
+        for (fingerprint, funcs) in by_fingerprint {
+            if funcs.len() as u32 >= min_instances {
+                let instances: Vec<DuplicateInstanceResult> = funcs
+                    .iter()
+                    .map(|f| DuplicateInstanceResult {
+                        file_path: result.path.clone(),
+                        name: f.name.clone(),
+                        start_line: f.start_line,
+                        end_line: f.end_line,
+                        similarity: 1.0,
+                    })
+                    .collect();
+
+                all_groups.push(DuplicateGroupResult {
+                    fingerprint,
+                    similarity: 1.0,
+                    instances,
+                });
+            }
+        }
     }
 
+    all_groups.sort_by(|a, b| b.instances.len().cmp(&a.instances.len()));
+    all_groups
+}
+
+fn display_results(
+    groups: &[DuplicateGroupResult],
+    _results: &[SingleFileResult],
+    show_code: bool,
+    format: &str,
+) {
     match format {
-        "table" => display_table(results, show_code),
-        "json" => display_json(results),
-        "csv" => display_csv(results),
+        "table" => display_table(groups, show_code),
+        "json" => display_json(groups),
+        "csv" => display_csv(groups),
         _ => {
             eprintln!("{}: {}", "Unknown format".red(), format);
-            display_table(results, show_code);
+            display_table(groups, show_code);
         }
     }
 }
 
-fn display_table(results: &[DuplicateResult], show_code: bool) {
-    let total_instances: usize = results.iter().map(|r| r.instances.len()).sum();
-    let total_lines_saved: u32 = results
+fn display_table(groups: &[DuplicateGroupResult], _show_code: bool) {
+    let total_instances: usize = groups.iter().map(|g| g.instances.len()).sum();
+    let total_lines_saved: u32 = groups
         .iter()
-        .map(|r| {
-            let first_loc = r
+        .map(|g| {
+            let first_loc = g
                 .instances
                 .first()
-                .map(|i| i.end_line - i.start_line)
+                .map(|i| i.end_line.saturating_sub(i.start_line))
                 .unwrap_or(0);
-            (r.instances.len() - 1) as u32 * first_loc
+            (g.instances.len().saturating_sub(1)) as u32 * first_loc
         })
         .sum();
 
     println!();
     println!("{}", "═".repeat(95).dimmed());
     println!(
-        "{} {} duplicate groups, {} total instances, {} lines could be saved",
+        "{} {} duplicate groups, {} total instances, ~{} lines could be saved",
         "Code Duplication Report".cyan().bold(),
-        results.len(),
+        groups.len(),
         total_instances,
         total_lines_saved
     );
     println!("{}", "═".repeat(95).dimmed());
     println!();
 
-    for result in results {
-        let severity = if result.instances.len() >= 5 {
+    for group in groups {
+        let severity = if group.instances.len() >= 5 {
             "red"
-        } else if result.instances.len() >= 3 {
+        } else if group.instances.len() >= 3 {
             "yellow"
         } else {
             "green"
         };
 
-        let instances_str = format!("{} instances", result.instances.len());
+        let instances_str = format!("{} instances", group.instances.len());
+        let colored_str = match severity {
+            "red" => instances_str.red(),
+            "yellow" => instances_str.yellow(),
+            _ => instances_str.green(),
+        };
+
         println!(
-            "{} {} (fingerprint: {})",
-            colorize(&instances_str, severity),
-            result.filename.cyan(),
-            format!("{:x}", result.fingerprint)
+            "{} (fingerprint: {:x}, similarity: {:.0}%)",
+            colored_str,
+            group.fingerprint,
+            group.similarity * 100.0
         );
 
-        for instance in &result.instances {
-            let name = instance.name.as_deref().unwrap_or("unnamed").dimmed();
+        for instance in &group.instances {
+            let name = instance.name.as_deref().unwrap_or("<anonymous>");
+            let file_name = instance
+                .file_path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+
             println!(
-                "    {} {} lines {}-{} ({} lines)",
+                "    {} {} in {} lines {}-{} ({} lines)",
                 "→".dimmed(),
-                name,
+                name.dimmed(),
+                file_name.cyan(),
                 instance.start_line.to_string().white(),
                 instance.end_line.to_string().white(),
-                (instance.end_line - instance.start_line)
-                    .to_string()
-                    .white()
+                instance.end_line.saturating_sub(instance.start_line)
             );
-        }
-
-        if show_code {
-            if let Some(_first_instance) = result.instances.first() {
-                if let Some(content) = &result.code_snippet {
-                    println!();
-                    println!("    {}", "Code snippet:".dimmed());
-                    for line in content.lines().take(10) {
-                        println!("    {}", line.dimmed());
-                    }
-                    if content.lines().count() > 10 {
-                        println!("    {}", "...".dimmed());
-                    }
-                }
-            }
         }
 
         println!();
     }
 }
 
-fn display_json(results: &[DuplicateResult]) {
-    let total_instances: usize = results.iter().map(|r| r.instances.len()).sum();
+fn display_json(groups: &[DuplicateGroupResult]) {
+    let total_instances: usize = groups.iter().map(|g| g.instances.len()).sum();
 
-    let output = serde_json::to_string_pretty(&serde_json::json!({
+    let output = serde_json::json!({
         "summary": {
-            "duplicate_groups": results.len(),
+            "duplicate_groups": groups.len(),
             "total_instances": total_instances,
         },
-        "duplicates": results.iter().map(|r| {
+        "duplicates": groups.iter().map(|g| {
             serde_json::json!({
-                "fingerprint": r.fingerprint,
-                "file": &r.filename,
-                "instances": r.instances.iter().map(|i| {
+                "fingerprint": g.fingerprint,
+                "similarity": g.similarity,
+                "instances": g.instances.iter().map(|i| {
                     serde_json::json!({
+                        "file": i.file_path.display().to_string(),
                         "name": i.name,
                         "start_line": i.start_line,
                         "end_line": i.end_line,
-                        "span": {
-                            "start": i.span.start,
-                            "end": i.span.end,
-                        }
+                        "similarity": i.similarity,
                     })
                 }).collect::<Vec<_>>()
             })
         }).collect::<Vec<_>>()
-    }))
-    .unwrap();
+    });
 
-    println!("{}", output);
+    match serde_json::to_string_pretty(&output) {
+        Ok(json_string) => println!("{}", json_string),
+        Err(e) => eprintln!("{}: {}", "Failed to serialize JSON".red(), e),
+    }
 }
 
-fn display_csv(results: &[DuplicateResult]) {
-    println!("fingerprint,file,instance_name,start_line,end_line");
+fn display_csv(groups: &[DuplicateGroupResult]) {
+    println!("fingerprint,similarity,file,name,start_line,end_line");
 
-    for result in results {
-        for instance in &result.instances {
-            let name = instance.name.as_deref().unwrap_or("unnamed");
+    for group in groups {
+        for instance in &group.instances {
+            let name = instance.name.as_deref().unwrap_or("");
             println!(
-                "{},{},{},{},{}",
-                result.fingerprint, result.filename, name, instance.start_line, instance.end_line
+                "{:x},{:.2},{},{},{},{}",
+                group.fingerprint,
+                group.similarity,
+                instance.file_path.display(),
+                name,
+                instance.start_line,
+                instance.end_line
             );
         }
     }
 }
 
-fn colorize(text: &str, color: &str) -> ColoredString {
-    match color {
-        "green" => text.green(),
-        "yellow" => text.yellow(),
-        "red" => text.red(),
-        _ => text.white(),
-    }
+#[derive(Debug, Clone)]
+struct DuplicateGroupResult {
+    fingerprint: u64,
+    similarity: f32,
+    instances: Vec<DuplicateInstanceResult>,
 }
 
 #[derive(Debug, Clone)]
-pub struct DuplicateResult {
-    pub fingerprint: u64,
-    pub filename: String,
-    pub instances: Vec<DuplicateInstance>,
-    pub code_snippet: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DuplicateInstance {
-    pub name: Option<String>,
-    pub start_line: u32,
-    pub end_line: u32,
-    pub span: SpanInfo,
-}
-
-#[derive(Debug, Clone)]
-pub struct SpanInfo {
-    pub start: u32,
-    pub end: u32,
-}
-
-impl DuplicateResult {
-    fn from(path: &Path, dup: mete::DuplicateGroupDto) -> Self {
-        Self {
-            fingerprint: dup.fingerprint,
-            filename: path.display().to_string(),
-            instances: dup
-                .instances
-                .into_iter()
-                .map(|i| DuplicateInstance {
-                    name: i.name,
-                    start_line: i.start_line,
-                    end_line: i.end_line,
-                    span: SpanInfo {
-                        start: i.span.start,
-                        end: i.span.end,
-                    },
-                })
-                .collect(),
-            code_snippet: None,
-        }
-    }
+struct DuplicateInstanceResult {
+    file_path: PathBuf,
+    name: Option<String>,
+    start_line: u32,
+    end_line: u32,
+    similarity: f32,
 }

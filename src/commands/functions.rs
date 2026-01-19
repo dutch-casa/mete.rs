@@ -1,7 +1,11 @@
+//! Functions command implementation.
+
+use super::common::{analyze_directory, analyze_file};
+use mete::data::{FunctionData, SingleFileResult};
+use mete::lang::Language;
+use mete::output::{colorize_cc, colorize_cognitive, colorize_depth};
 use colored::*;
-use mete::{AnalysisService, AnalyzeRequest, WantFlags};
-use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn run_functions(
     path: &str,
@@ -15,7 +19,7 @@ pub fn run_functions(
     sort_by: &str,
     sort_order: &str,
     format: &str,
-    verbose: bool,
+    _verbose: bool,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(path);
@@ -28,427 +32,187 @@ pub fn run_functions(
         std::process::exit(1);
     }
 
+    let lang = language.and_then(Language::from_str);
+
     let results = if path.is_file() {
-        analyze_file(path, language, verbose, quiet)
+        analyze_file(path, lang, quiet)
     } else if path.is_dir() {
-        analyze_directory(path, language, pattern, verbose, quiet)
+        analyze_directory(path, lang, pattern, quiet)
     } else {
         eprintln!("{}", "Error: Path must be a file or directory".red());
         std::process::exit(1);
     };
 
-    let filtered_functions = apply_filters(&results, complex, large, deep, min_complexity, min_loc);
+    let mut functions = flatten_functions(&results);
+    apply_filters(&mut functions, complex, large, deep, min_complexity, min_loc);
+    sort_functions(&mut functions, sort_by, sort_order);
 
-    let sorted_functions = sort_functions(&filtered_functions, sort_by, sort_order);
-
-    if sorted_functions.is_empty() && !quiet {
+    if functions.is_empty() && !quiet {
         println!("{}", "No functions found matching criteria".yellow());
         return Ok(());
     }
 
-    display_results(&sorted_functions, format, verbose, quiet);
+    if !quiet {
+        display_functions(&functions, format);
+    }
 
     Ok(())
 }
 
-fn analyze_file(
-    path: &Path,
-    language: Option<&str>,
-    _verbose: bool,
-    quiet: bool,
-) -> Vec<FunctionResult> {
-    let mut results: Vec<FunctionResult> = Vec::new();
-
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(_) => {
-            if !quiet {
-                eprintln!(
-                    "{} {}",
-                    "Error reading file".red(),
-                    path.display().to_string().dimmed()
-                );
-            }
-            return results;
-        }
-    };
-
-    let lang = language.unwrap_or_else(|| detect_language(path));
-    let request = build_request(&text, lang);
-
-    match AnalysisService::analyze(request) {
-        Ok(response) => {
-            if let Some(functions) = response.functions {
-                for func in functions {
-                    results.push(FunctionResult::from(path, func));
-                }
-            }
-        }
-        Err(e) => {
-            if !quiet {
-                eprintln!(
-                    "{} {}: {}",
-                    "Analysis failed".yellow(),
-                    path.display().to_string().dimmed(),
-                    e
-                );
-            }
-        }
-    }
-
-    results
+#[derive(Clone)]
+struct FunctionWithFile {
+    file_path: PathBuf,
+    function: FunctionData,
 }
 
-fn analyze_directory(
-    dir: &Path,
-    language: Option<&str>,
-    pattern: &str,
-    verbose: bool,
-    quiet: bool,
-) -> Vec<FunctionResult> {
-    let pattern = dir.join(pattern);
-    let pattern_str = pattern.to_string_lossy().to_string();
-
-    let entries = match glob::glob(&pattern_str) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("{} {}", "Invalid pattern".red(), e);
-            return Vec::new();
-        }
-    };
-
-    let mut results: Vec<FunctionResult> = Vec::new();
-
-    if verbose && !quiet {
-        println!("{}", "Scanning files...".dimmed());
-    }
-
-    for entry in entries {
-        match entry {
-            Ok(path) if path.is_file() => {
-                let lang = language.unwrap_or_else(|| detect_language(&path));
-                let request = build_request_from_path(&path, lang);
-
-                match AnalysisService::analyze(request) {
-                    Ok(response) => {
-                        if let Some(functions) = response.functions {
-                            for func in functions {
-                                results.push(FunctionResult::from(&path, func));
-                            }
-
-                            if verbose && !quiet {
-                                println!("  {}", path.display().to_string().dimmed());
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if !quiet {
-                            eprintln!(
-                                "{} {}: {}",
-                                "Analysis failed".yellow(),
-                                path.display().to_string().dimmed(),
-                                e
-                            );
-                        }
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                if !quiet {
-                    eprintln!("{} {}", "Error reading entry".yellow(), e);
-                }
-            }
-        }
-    }
-
+fn flatten_functions(results: &[SingleFileResult]) -> Vec<FunctionWithFile> {
     results
-}
-
-fn detect_language(path: &Path) -> &str {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| match ext {
-            "rs" => "rust",
-            "ts" | "tsx" => "typescript",
-            "js" | "jsx" => "javascript",
-            "py" => "python",
-            "go" => "go",
-            "java" => "java",
-            "cs" => "c_sharp",
-            "cpp" | "cc" | "cxx" => "cpp",
-            "c" => "c",
-            "ex" | "exs" => "elixir",
-            _ => "rust",
+        .iter()
+        .flat_map(|r| {
+            r.functions.iter().map(|f| FunctionWithFile {
+                file_path: r.path.clone(),
+                function: f.clone(),
+            })
         })
-        .unwrap_or("rust")
-}
-
-fn build_request(text: &str, language: &str) -> AnalyzeRequest {
-    AnalyzeRequest::with_options(
-        text.to_string(),
-        language.to_string(),
-        None,
-        WantFlags::all(),
-    )
-    .unwrap_or_else(|_| AnalyzeRequest::new(text.to_string(), "rust".to_string()).unwrap())
-}
-
-fn build_request_from_path(path: &Path, language: &str) -> AnalyzeRequest {
-    let text = fs::read_to_string(path).unwrap_or_default();
-    build_request(&text, language)
+        .collect()
 }
 
 fn apply_filters(
-    results: &[FunctionResult],
+    functions: &mut Vec<FunctionWithFile>,
     complex: bool,
     large: bool,
     deep: bool,
     min_complexity: Option<u32>,
     min_loc: Option<u32>,
-) -> Vec<FunctionResult> {
-    results
-        .iter()
-        .filter(|f| if complex { f.is_complex() } else { true })
-        .filter(|f| if large { f.is_large() } else { true })
-        .filter(|f| if deep { f.is_deep() } else { true })
-        .filter(|f| min_complexity.map(|m| f.function.cc >= m).unwrap_or(true))
-        .filter(|f| min_loc.map(|m| f.function.loc >= m).unwrap_or(true))
-        .cloned()
-        .collect()
+) {
+    if complex {
+        functions.retain(|f| mete::metrics::is_complex(f.function.cc, f.function.loc));
+    }
+    if large {
+        functions.retain(|f| mete::metrics::is_large(f.function.loc));
+    }
+    if deep {
+        functions.retain(|f| mete::metrics::is_deeply_nested(f.function.depth));
+    }
+    if let Some(min_cc) = min_complexity {
+        functions.retain(|f| f.function.cc >= min_cc);
+    }
+    if let Some(min) = min_loc {
+        functions.retain(|f| f.function.loc >= min);
+    }
 }
 
-fn sort_functions(
-    results: &[FunctionResult],
-    sort_by: &str,
-    sort_order: &str,
-) -> Vec<FunctionResult> {
-    let mut sorted: Vec<FunctionResult> = results.to_vec();
+fn sort_functions(functions: &mut [FunctionWithFile], sort_by: &str, sort_order: &str) {
+    let cmp = |a: &FunctionWithFile, b: &FunctionWithFile| match sort_by {
+        "cc" => a.function.cc.cmp(&b.function.cc),
+        "cog" => a.function.cognitive.cmp(&b.function.cognitive),
+        "loc" => a.function.loc.cmp(&b.function.loc),
+        "depth" => a.function.depth.cmp(&b.function.depth),
+        "name" => a.function.name.cmp(&b.function.name),
+        "path" | _ => a.file_path.cmp(&b.file_path),
+    };
 
-    match sort_by {
-        "cc" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.function.cc.cmp(&a.function.cc)
-            } else {
-                a.function.cc.cmp(&b.function.cc)
-            }
-        }),
-        "loc" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.function.loc.cmp(&a.function.loc)
-            } else {
-                a.function.loc.cmp(&b.function.loc)
-            }
-        }),
-        "depth" => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.function.depth.cmp(&a.function.depth)
-            } else {
-                a.function.depth.cmp(&b.function.depth)
-            }
-        }),
-        "name" => sorted.sort_by(|a, b| {
-            let name_a = a.function.name.as_deref().unwrap_or("");
-            let name_b = b.function.name.as_deref().unwrap_or("");
-            if sort_order == "desc" {
-                name_b.cmp(name_a)
-            } else {
-                name_a.cmp(name_b)
-            }
-        }),
-        "path" | _ => sorted.sort_by(|a, b| {
-            if sort_order == "desc" {
-                b.filename.cmp(&a.filename)
-            } else {
-                a.filename.cmp(&b.filename)
-            }
-        }),
+    if sort_order == "desc" {
+        functions.sort_by(|a, b| cmp(b, a));
+    } else {
+        functions.sort_by(cmp);
     }
-
-    sorted
 }
 
-fn display_results(results: &[FunctionResult], format: &str, _verbose: bool, quiet: bool) {
-    if quiet {
-        return;
-    }
-
+fn display_functions(functions: &[FunctionWithFile], format: &str) {
     match format {
-        "table" => display_table(results),
-        "json" => display_json(results),
-        "csv" => display_csv(results),
+        "table" => display_table(functions),
+        "json" => display_json(functions),
+        "csv" => display_csv(functions),
         _ => {
             eprintln!("{}: {}", "Unknown format".red(), format);
-            display_table(results);
+            display_table(functions);
         }
     }
 }
 
-fn display_table(results: &[FunctionResult]) {
+fn display_table(functions: &[FunctionWithFile]) {
     println!();
-    println!("{}", "═".repeat(100).dimmed());
+    println!("{}", "Function Metrics".cyan().bold());
+    println!("{}", "─".repeat(110).dimmed());
     println!(
-        "{} {} functions",
-        "Function Analysis".cyan().bold(),
-        results.len()
-    );
-    println!("{}", "═".repeat(100).dimmed());
-    println!();
-    println!(
-        "{:<60} {:>8} {:>8} {:>8} {:>8} {:>16}",
+        "{:<40} {:>30} {:>6} {:>6} {:>6} {:>6} {:>10}",
         "Function".cyan(),
+        "File".cyan(),
         "LOC".cyan(),
         "CC".cyan(),
+        "COG".cyan(),
         "Depth".cyan(),
-        "Fingerprint".cyan(),
-        "File".cyan()
+        "Lines".cyan()
     );
-    println!("{}", "─".repeat(100).dimmed());
+    println!("{}", "─".repeat(110).dimmed());
 
-    for result in results {
-        let f = &result.function;
+    for f in functions {
+        let name = f.function.name.as_deref().unwrap_or("<anonymous>");
+        let file_name = f.file_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
 
-        let cc_color = if f.cc <= 5 {
-            "green"
-        } else if f.cc <= 10 {
-            "yellow"
-        } else {
-            "red"
-        };
-
-        let depth_color = if f.depth <= 3 {
-            "green"
-        } else if f.depth <= 5 {
-            "yellow"
-        } else {
-            "red"
-        };
-
-        let loc_color = if f.loc <= 25 {
-            "green"
-        } else if f.loc <= 50 {
-            "yellow"
-        } else {
-            "red"
-        };
-
-        let name = f.name.as_deref().unwrap_or("<anonymous>");
-
-        let cc_colored = colorize(&format!("{}", f.cc), cc_color);
-        let depth_colored = colorize(&format!("{}", f.depth), depth_color);
-        let loc_colored = colorize(&format!("{}", f.loc), loc_color);
-
-        let name_display: String = format!("{}:{}", result.filename, name)
-            .chars()
-            .take(57)
-            .collect();
+        let cc_colored = colorize_cc(f.function.cc);
+        let cog_colored = colorize_cognitive(f.function.cognitive);
+        let depth_colored = colorize_depth(f.function.depth);
 
         println!(
-            "{:<60} {:>8} {:>8} {:>8} {:>16} {:>30}",
-            name_display,
-            loc_colored,
+            "{:<40} {:>30} {:>6} {:>6} {:>6} {:>6} {:>5}-{:<4}",
+            name.chars().take(38).collect::<String>(),
+            file_name.chars().take(28).collect::<String>(),
+            f.function.loc,
             cc_colored,
+            cog_colored,
             depth_colored,
-            format!("{:x}", f.fingerprint),
-            result.filename.chars().take(28).collect::<String>()
+            f.function.start_line,
+            f.function.end_line
         );
     }
 }
 
-fn display_json(results: &[FunctionResult]) {
-    let output = serde_json::to_string_pretty(&serde_json::json!({
-        "functions": results.len(),
-        "results": results.iter().map(|r| {
+fn display_json(functions: &[FunctionWithFile]) {
+    let json_functions: Vec<_> = functions
+        .iter()
+        .map(|f| {
             serde_json::json!({
-                "file": &r.filename,
-                "name": r.function.name,
-                "loc": r.function.loc,
-                "cc": r.function.cc,
-                "depth": r.function.depth,
-                "fingerprint": r.function.fingerprint,
-                "span": {
-                    "start": r.function.span.start,
-                    "end": r.function.span.end,
-                },
+                "name": f.function.name,
+                "file": f.file_path.display().to_string(),
+                "start_line": f.function.start_line,
+                "end_line": f.function.end_line,
+                "loc": f.function.loc,
+                "cc": f.function.cc,
+                "cognitive": f.function.cognitive,
+                "depth": f.function.depth,
+                "fingerprint": f.function.fingerprint,
             })
-        }).collect::<Vec<_>>()
-    }))
-    .unwrap();
+        })
+        .collect();
 
-    println!("{}", output);
+    let json = serde_json::json!({ "functions": json_functions });
+
+    match serde_json::to_string_pretty(&json) {
+        Ok(output) => println!("{}", output),
+        Err(e) => eprintln!("{}", format!("Error serializing JSON: {}", e).red()),
+    }
 }
 
-fn display_csv(results: &[FunctionResult]) {
-    println!("file,name,loc,cc,depth,fingerprint,start,end");
+fn display_csv(functions: &[FunctionWithFile]) {
+    println!("name,file,start_line,end_line,loc,cc,cognitive,depth,fingerprint");
 
-    for result in results {
-        let f = &result.function;
-        let name = f.name.as_deref().unwrap_or("<anonymous>");
+    for f in functions {
         println!(
-            "{},{},{},{},{},{},{},{}",
-            result.filename, name, f.loc, f.cc, f.depth, f.fingerprint, f.span.start, f.span.end
+            "{},{},{},{},{},{},{},{},{}",
+            f.function.name.as_deref().unwrap_or(""),
+            f.file_path.display(),
+            f.function.start_line,
+            f.function.end_line,
+            f.function.loc,
+            f.function.cc,
+            f.function.cognitive,
+            f.function.depth,
+            f.function.fingerprint
         );
-    }
-}
-
-fn colorize(text: &str, color: &str) -> ColoredString {
-    match color {
-        "green" => text.green(),
-        "yellow" => text.yellow(),
-        "red" => text.red(),
-        _ => text.white(),
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionResult {
-    pub filename: String,
-    pub function: FunctionMetrics,
-}
-
-#[derive(Debug, Clone)]
-pub struct FunctionMetrics {
-    pub name: Option<String>,
-    pub span: SpanInfo,
-    pub loc: u32,
-    pub cc: u32,
-    pub depth: u32,
-    pub fingerprint: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct SpanInfo {
-    pub start: u32,
-    pub end: u32,
-}
-
-impl FunctionResult {
-    fn from(path: &Path, func: mete::NodeMetricsDto) -> Self {
-        Self {
-            filename: path.display().to_string(),
-            function: FunctionMetrics {
-                name: func.name,
-                span: SpanInfo {
-                    start: func.span.start,
-                    end: func.span.end,
-                },
-                loc: func.loc,
-                cc: func.cc,
-                depth: func.depth,
-                fingerprint: func.fingerprint,
-            },
-        }
-    }
-
-    fn is_complex(&self) -> bool {
-        self.function.cc > 10 || (self.function.cc as f64 / self.function.loc as f64) > 0.3
-    }
-
-    fn is_large(&self) -> bool {
-        self.function.loc > 50
-    }
-
-    fn is_deep(&self) -> bool {
-        self.function.depth > 3
     }
 }

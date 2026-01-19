@@ -1,7 +1,12 @@
+//! Entropy command implementation.
+
+use super::common::is_skippable;
+use mete::lang::Language;
 use colored::*;
-use mete::EntropyRules;
+use rayon::prelude::*;
+use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Run entropy analysis on files/directories
 pub fn run_entropy(
@@ -23,10 +28,12 @@ pub fn run_entropy(
         std::process::exit(1);
     }
 
+    let lang = language.and_then(Language::from_str);
+
     let results = if path.is_file() {
-        analyze_file_entropy(path, language, quiet)
+        analyze_file_entropy(path, lang, quiet)
     } else if path.is_dir() {
-        analyze_directory_entropy(path, language, pattern, quiet)
+        analyze_directory_entropy(path, lang, pattern, quiet)
     } else {
         eprintln!("{}", "Error: Path must be a file or directory".red());
         std::process::exit(1);
@@ -39,140 +46,132 @@ pub fn run_entropy(
         return Ok(());
     }
 
-    // Sort by metric mass (descending - most confusing first)
     let mut sorted_results = results;
-    sorted_results.sort_by(|a, b| b.metric_mass.partial_cmp(&a.metric_mass).unwrap());
+    sorted_results.sort_by(|a, b| b.metric_mass.total_cmp(&a.metric_mass));
 
-    // Apply top_n limit if specified
     let display_results = if let Some(n) = top_n {
         sorted_results.into_iter().take(n).collect()
     } else {
         sorted_results
     };
 
-    display_entropy_results(&display_results, format, quiet);
+    if !quiet {
+        display_entropy_results(&display_results, format);
+    }
 
     Ok(())
 }
 
 #[derive(Debug, Clone)]
 pub struct EntropyFileResult {
-    pub path: String,
+    pub path: PathBuf,
     pub entropy: f64,
     pub metric_mass: f64,
     pub node_count: u32,
-    pub unique_symbols: usize,
+    pub unique_types: usize,
 }
 
 fn analyze_file_entropy(
     path: &Path,
-    language: Option<&str>,
+    language: Option<Language>,
     quiet: bool,
 ) -> Vec<EntropyFileResult> {
-    let mut results: Vec<EntropyFileResult> = Vec::new();
-
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(_) => {
+    let lang = match language.or_else(|| Language::from_path(path)) {
+        Some(l) => l,
+        None => {
             if !quiet {
-                eprintln!(
-                    "{} {}",
-                    "Error reading file".red(),
-                    path.display().to_string().dimmed()
-                );
+                eprintln!("{} {}", "Unknown language for".yellow(), path.display().to_string().dimmed());
             }
-            return results;
+            return Vec::new();
         }
     };
 
-    if text.trim().is_empty() {
-        return results;
+    let source = match fs::read(path) {
+        Ok(s) => s,
+        Err(e) => {
+            if !quiet {
+                eprintln!("{} {}: {}", "Error reading file".red(), path.display().to_string().dimmed(), e);
+            }
+            return Vec::new();
+        }
+    };
+
+    let tree = match parse_source(&lang, &source) {
+        Some(t) => t,
+        None => {
+            if !quiet {
+                eprintln!("{} {}", "Parse failed".red(), path.display().to_string().dimmed());
+            }
+            return Vec::new();
+        }
+    };
+
+    let (type_counts, node_count) = count_node_types(&tree);
+    if node_count == 0 {
+        return Vec::new();
     }
 
-    let lang = language.unwrap_or_else(|| detect_language(path));
-    let lang_id = match mete::LanguageId::from_str(lang) {
-        Ok(id) => id,
-        Err(_) => {
-            if !quiet {
-                eprintln!(
-                    "{} {}: {}",
-                    "Unsupported language".yellow(),
-                    path.display().to_string().dimmed(),
-                    lang
-                );
+    let (entropy, metric_mass) = compute_entropy(&type_counts, node_count);
+
+    vec![EntropyFileResult {
+        path: path.to_path_buf(),
+        entropy,
+        metric_mass,
+        node_count,
+        unique_types: type_counts.len(),
+    }]
+}
+
+fn parse_source(lang: &Language, source: &[u8]) -> Option<tree_sitter::Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&lang.tree_sitter_language()).ok()?;
+    parser.parse(source, None)
+}
+
+fn count_node_types(tree: &tree_sitter::Tree) -> (HashMap<&str, u32>, u32) {
+    let mut type_counts: HashMap<&str, u32> = HashMap::new();
+    let mut node_count: u32 = 0;
+    let mut cursor = tree.walk();
+
+    loop {
+        let kind = cursor.node().kind();
+        *type_counts.entry(kind).or_insert(0) += 1;
+        node_count += 1;
+
+        if cursor.goto_first_child() {
+            continue;
+        }
+
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return (type_counts, node_count);
             }
-            return results;
         }
-    };
+    }
+}
 
-    let mut adapter = match mete::TreeSitterAdapter::new(lang_id) {
-        Ok(a) => a,
-        Err(_) => {
-            if !quiet {
-                eprintln!(
-                    "{} {}",
-                    "Failed to create parser".red(),
-                    path.display().to_string().dimmed()
-                );
-            }
-            return results;
-        }
-    };
+fn compute_entropy(type_counts: &HashMap<&str, u32>, node_count: u32) -> (f64, f64) {
+    let total = node_count as f64;
+    let entropy: f64 = type_counts
+        .values()
+        .map(|&count| {
+            let p = count as f64 / total;
+            -p * p.log2()
+        })
+        .sum();
 
-    let source_text = match mete::SourceText::new(text) {
-        Ok(t) => t,
-        Err(_) => {
-            if !quiet {
-                eprintln!(
-                    "{} {}",
-                    "Invalid source text".red(),
-                    path.display().to_string().dimmed()
-                );
-            }
-            return results;
-        }
-    };
-
-    let distribution = match adapter.extract_symbol_distribution(&source_text) {
-        Ok(d) => d,
-        Err(_) => {
-            if !quiet {
-                eprintln!(
-                    "{} {}",
-                    "Parse failed".red(),
-                    path.display().to_string().dimmed()
-                );
-            }
-            return results;
-        }
-    };
-
-    let (entropy, metric_mass, node_count) = match EntropyRules::analyze(distribution) {
-        Ok(r) => r,
-        Err(_) => {
-            return results;
-        }
-    };
-
-    results.push(EntropyFileResult {
-        path: path.display().to_string(),
-        entropy: entropy.as_f64(),
-        metric_mass: metric_mass.as_f64(),
-        node_count: node_count.as_u32(),
-        unique_symbols: 0,
-    });
-
-    results
+    let metric_mass = entropy * total.ln();
+    (entropy, metric_mass)
 }
 
 fn analyze_directory_entropy(
     dir: &Path,
-    language: Option<&str>,
+    language: Option<Language>,
     pattern: &str,
     quiet: bool,
 ) -> Vec<EntropyFileResult> {
-    let pattern = dir.join(pattern);
-    let pattern_str = pattern.to_string_lossy().to_string();
+    let glob_pattern = dir.join(pattern);
+    let pattern_str = glob_pattern.to_string_lossy().to_string();
 
     let entries = match glob::glob(&pattern_str) {
         Ok(e) => e,
@@ -182,10 +181,9 @@ fn analyze_directory_entropy(
         }
     };
 
-    // Collect all file paths first for parallel processing
-    let file_paths: Vec<_> = entries
+    let file_paths: Vec<PathBuf> = entries
         .filter_map(|entry| match entry {
-            Ok(path) if path.is_file() => Some(path),
+            Ok(path) if path.is_file() && !is_skippable(&path) => Some(path),
             _ => None,
         })
         .collect();
@@ -194,48 +192,13 @@ fn analyze_directory_entropy(
         return Vec::new();
     }
 
-    // Parallel file analysis using rayon
-    use rayon::prelude::*;
-
-    let results: Vec<EntropyFileResult> = file_paths
+    file_paths
         .par_iter()
-        .filter_map(|path| {
-            let result = analyze_file_entropy(path, language, quiet);
-            if result.is_empty() {
-                None
-            } else {
-                Some(result.into_iter().next().unwrap())
-            }
-        })
-        .collect();
-
-    results
+        .filter_map(|path| analyze_file_entropy(path, language, quiet).into_iter().next())
+        .collect()
 }
 
-fn detect_language(path: &Path) -> &str {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|ext| match ext {
-            "rs" => "rust",
-            "ts" | "tsx" => "typescript",
-            "js" | "jsx" => "javascript",
-            "py" => "python",
-            "go" => "go",
-            "java" => "java",
-            "cs" => "c_sharp",
-            "cpp" | "cc" | "cxx" => "cpp",
-            "c" => "c",
-            "ex" | "exs" => "elixir",
-            _ => "rust",
-        })
-        .unwrap_or("rust")
-}
-
-fn display_entropy_results(results: &[EntropyFileResult], format: &str, quiet: bool) {
-    if quiet {
-        return;
-    }
-
+fn display_entropy_results(results: &[EntropyFileResult], format: &str) {
     match format {
         "json" => display_json(results),
         "csv" => display_csv(results),
@@ -248,23 +211,30 @@ fn display_json(results: &[EntropyFileResult]) {
         .iter()
         .map(|r| {
             serde_json::json!({
-                "path": r.path,
+                "path": r.path.display().to_string(),
                 "entropy": r.entropy,
                 "metric_mass": r.metric_mass,
                 "node_count": r.node_count,
-                "unique_symbols": r.unique_symbols
+                "unique_types": r.unique_types
             })
         })
         .collect();
-    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+    match serde_json::to_string_pretty(&output) {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("JSON serialization failed: {}", e),
+    }
 }
 
 fn display_csv(results: &[EntropyFileResult]) {
-    println!("path,entropy,metric_mass,node_count,unique_symbols");
+    println!("path,entropy,metric_mass,node_count,unique_types");
     for r in results {
         println!(
             "{},{:.4},{:.4},{},{}",
-            r.path, r.entropy, r.metric_mass, r.node_count, r.unique_symbols
+            r.path.display(),
+            r.entropy,
+            r.metric_mass,
+            r.node_count,
+            r.unique_types
         );
     }
 }
@@ -284,12 +254,11 @@ fn display_table(results: &[EntropyFileResult]) {
     println!("{}", "═".repeat(95).dimmed());
     println!();
 
-    // Summary
     let avg_entropy: f64 = results.iter().map(|r| r.entropy).sum::<f64>() / results.len() as f64;
     let max_mass = results
         .iter()
         .map(|r| r.metric_mass)
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
 
     println!(
@@ -302,37 +271,39 @@ fn display_table(results: &[EntropyFileResult]) {
     println!();
 
     // Table header
-    println!("{}", "─".repeat(105).dimmed());
+    println!("{}", "─".repeat(95).dimmed());
     println!(
-        "{:<55} {:>10} {:>10} {:>10} {:>12} {:>10}",
+        "{:<55} {:>10} {:>10} {:>10} {:>10}",
         "File".cyan(),
         "Entropy".cyan(),
         "Mass (M)".cyan(),
         "Nodes".cyan(),
-        "Unique Types".cyan(),
-        "Level".cyan()
+        "Types".cyan(),
     );
-    println!("{}", "─".repeat(105).dimmed());
+    println!("{}", "─".repeat(95).dimmed());
 
     for result in results {
         let level = classify_entropy(result.entropy);
-        let level_color = match level {
-            "simple" => "green",
-            "moderate" => "yellow",
-            "complex" => "red",
-            _ => "white",
+        let entropy_colored = match level {
+            "simple" => format!("{:.2}", result.entropy).green(),
+            "moderate" => format!("{:.2}", result.entropy).yellow(),
+            _ => format!("{:.2}", result.entropy).red(),
         };
 
-        let name: String = result.path.chars().take(52).collect();
+        let name = result
+            .path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let name: String = name.chars().take(52).collect();
 
         println!(
-            "{:<55} {:>10.2} {:>10.2} {:>10} {:>12} {:>10}",
+            "{:<55} {:>10} {:>10.2} {:>10} {:>10}",
             name,
-            result.entropy,
+            entropy_colored,
             result.metric_mass,
             result.node_count,
-            result.unique_symbols,
-            colorize(level, level_color)
+            result.unique_types,
         );
     }
 }
@@ -344,14 +315,5 @@ fn classify_entropy(entropy: f64) -> &'static str {
         "complex"
     } else {
         "moderate"
-    }
-}
-
-fn colorize(text: &str, color: &str) -> ColoredString {
-    match color {
-        "green" => text.green(),
-        "yellow" => text.yellow(),
-        "red" => text.red(),
-        _ => text.white(),
     }
 }
