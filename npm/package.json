@@ -1,5 +1,5 @@
 {
-  "name": "mete-cli",
+  "name": "@dutch.casa/mete-rs",
   "version": "0.1.0",
   "description": "Structural metrics engine for code quality analysis",
   "license": "MIT",
