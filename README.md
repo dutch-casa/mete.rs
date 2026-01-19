@@ -53,7 +53,7 @@ claude mcp add mete -- mete mcp
 
 ### Cursor
 
-<a href="cursor://anysphere.cursor-deeplink/mcp/install?name=mete&config=%7B%22command%22%3A%22mete%22%2C%22args%22%3A%5B%22mcp%22%5D%7D">
+<a href="cursor://anysphere.cursor-deeplink/mcp/install?name=mete&config=eyJjb21tYW5kIjoibWV0ZSIsImFyZ3MiOlsibWNwIl19">
   <img src="https://img.shields.io/badge/Add_to-Cursor-000000?style=for-the-badge&logo=cursor&logoColor=white" alt="Add to Cursor">
 </a>
 
