@@ -1,6 +1,6 @@
 {
   "name": "@dutch.casa/mete-rs",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Structural metrics engine for code quality analysis",
   "license": "MIT",
   "repository": {
@@ -25,7 +25,8 @@
   },
   "files": [
     "bin.js",
-    "install.js"
+    "install.js",
+    "README.md"
   ],
   "engines": {
     "node": ">=16"

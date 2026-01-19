@@ -1,6 +1,6 @@
 [package]
 name = "mete"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Structural metrics engine for code quality analysis"
 license = "MIT"
@@ -8,6 +8,7 @@ repository = "https://github.com/dutch-casa/mete.rs"
 homepage = "https://github.com/dutch-casa/mete.rs"
 keywords = ["metrics", "complexity", "analysis", "code-quality", "cyclomatic"]
 categories = ["development-tools", "command-line-utilities"]
+readme = "README.md"
 
 [[bin]]
 name = "mete"
