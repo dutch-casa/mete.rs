@@ -32,7 +32,7 @@ pub fn run_duplicates(
         std::process::exit(1);
     }
 
-    let lang = language.and_then(Language::from_str);
+    let lang = language.and_then(Language::from_name);
     let similarity_threshold = threshold.unwrap_or(0.8);
 
     let results = if path.is_file() {

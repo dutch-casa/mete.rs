@@ -28,7 +28,7 @@ pub fn run_entropy(
         std::process::exit(1);
     }
 
-    let lang = language.and_then(Language::from_str);
+    let lang = language.and_then(Language::from_name);
 
     let results = if path.is_file() {
         analyze_file_entropy(path, lang, quiet)
@@ -270,7 +270,6 @@ fn display_table(results: &[EntropyFileResult]) {
     );
     println!();
 
-    // Table header
     println!("{}", "─".repeat(95).dimmed());
     println!(
         "{:<55} {:>10} {:>10} {:>10} {:>10}",

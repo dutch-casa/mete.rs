@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 /// Number of hash values in a MinHash signature.
-/// 64 hashes gives ~95% accuracy at 80% similarity threshold.
+/// 64 hashes ≈ 95% detection rate at ≥80% Jaccard similarity.
 const MINHASH_SIZE: usize = 64;
 
 /// Number of bands for LSH (locality-sensitive hashing).
@@ -118,7 +118,6 @@ impl DuplicateIndex {
                 if bucket.len() < 2 {
                     continue;
                 }
-                // Add all pairs in this bucket
                 for i in 0..bucket.len() {
                     for j in (i + 1)..bucket.len() {
                         candidate_pairs.push((bucket[i], bucket[j]));

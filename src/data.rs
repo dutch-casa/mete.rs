@@ -8,7 +8,6 @@ use std::path::PathBuf;
 /// SoA layout for cache-friendly iteration.
 #[derive(Debug, Default)]
 pub struct FileResults {
-    // Parallel arrays - one entry per file
     pub paths: Vec<PathBuf>,
     pub loc: Vec<u32>,
     pub cc_max: Vec<u32>,
@@ -228,6 +227,13 @@ impl StringInterner {
     }
 }
 
+/// Tracks the last boolean operator seen for cognitive complexity chaining.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoolOp {
+    And,
+    Or,
+}
+
 /// Accumulator updated during single-pass AST walk.
 /// No allocations during traversal.
 #[derive(Debug, Default, Clone)]
@@ -252,7 +258,7 @@ pub struct WalkState {
 
     // Cognitive complexity tracking
     pub cognitive_nesting: u32,
-    pub last_bool_op: Option<bool>, // true = AND, false = OR
+    pub last_bool_op: Option<BoolOp>,
 
     // Fingerprint accumulator (rolling hash)
     pub fingerprint_hash: u64,
@@ -311,9 +317,9 @@ impl WalkState {
 
     /// Record a boolean operator (for cognitive complexity chains).
     /// Returns true if this is a new sequence (adds complexity).
-    pub fn record_bool_op(&mut self, is_and: bool) -> bool {
-        let is_new = self.last_bool_op != Some(is_and);
-        self.last_bool_op = Some(is_and);
+    pub fn record_bool_op(&mut self, op: BoolOp) -> bool {
+        let is_new = self.last_bool_op != Some(op);
+        self.last_bool_op = Some(op);
         is_new
     }
 

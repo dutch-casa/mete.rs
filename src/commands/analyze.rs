@@ -32,7 +32,7 @@ pub fn run_analyze(
         std::process::exit(1);
     }
 
-    let lang = language.and_then(Language::from_str);
+    let lang = language.and_then(Language::from_name);
 
     let results = if path.is_file() {
         analyze_file(path, lang, quiet)

@@ -314,8 +314,6 @@ pub fn print_functions_csv(
     }
 }
 
-// Helper types and functions
-
 struct Aggregates {
     total_loc: u32,
     avg_cc_max: f64,
@@ -396,46 +394,27 @@ fn print_summary_row(aggs: &Aggregates, show_mi: bool) {
     }
 }
 
-pub fn colorize_mi(mi: u8) -> ColoredString {
-    let level = MiLevel::from_value(mi);
-    let text = format!("{}", mi);
-    match level.color() {
+fn colorize(text: String, color: &str) -> ColoredString {
+    match color {
         "green" => text.green(),
         "yellow" => text.yellow(),
         "red" => text.red(),
         _ => text.white(),
     }
+}
+
+pub fn colorize_mi(mi: u8) -> ColoredString {
+    colorize(mi.to_string(), MiLevel::from_value(mi).color())
 }
 
 pub fn colorize_cc(cc: u32) -> ColoredString {
-    let level = CcLevel::from_value(cc);
-    let text = cc.to_string();
-    match level.color() {
-        "green" => text.green(),
-        "yellow" => text.yellow(),
-        "red" => text.red(),
-        _ => text.white(),
-    }
+    colorize(cc.to_string(), CcLevel::from_value(cc).color())
 }
 
 pub fn colorize_cognitive(cog: u32) -> ColoredString {
-    let level = CognitiveLevel::from_value(cog);
-    let text = cog.to_string();
-    match level.color() {
-        "green" => text.green(),
-        "yellow" => text.yellow(),
-        "red" => text.red(),
-        _ => text.white(),
-    }
+    colorize(cog.to_string(), CognitiveLevel::from_value(cog).color())
 }
 
 pub fn colorize_depth(depth: u32) -> ColoredString {
-    let level = DepthLevel::from_value(depth);
-    let text = depth.to_string();
-    match level.color() {
-        "green" => text.green(),
-        "yellow" => text.yellow(),
-        "red" => text.red(),
-        _ => text.white(),
-    }
+    colorize(depth.to_string(), DepthLevel::from_value(depth).color())
 }

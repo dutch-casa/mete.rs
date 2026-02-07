@@ -11,13 +11,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let runner = cli::CliRunner::new();
 
-    // Handle MCP command specially (async)
     if let Some(Commands::Mcp {}) = &runner.cli.command {
         mcp::run_server().await?;
         return Ok(());
     }
 
-    // All other commands run synchronously
     runner.run()
 }
 

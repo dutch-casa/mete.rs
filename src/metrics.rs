@@ -26,17 +26,14 @@ macro_rules! level_enum {
 ///
 /// Uses SEI formula: MI = 171 - 5.2*ln(V) - 0.23*CC - 16.2*ln(LOC)
 /// Normalized to 0-100 scale.
+#[must_use]
 #[inline]
 pub fn maintainability_index(halstead_volume: f64, cyclomatic_complexity: u32, loc: u32) -> u8 {
     if loc == 0 {
         return 100;
     }
 
-    let v = if halstead_volume <= 0.0 {
-        1.0
-    } else {
-        halstead_volume
-    };
+    let v = halstead_volume.max(1.0);
     let cc = cyclomatic_complexity.max(1) as f64;
     let loc_f = loc as f64;
 
@@ -47,6 +44,7 @@ pub fn maintainability_index(halstead_volume: f64, cyclomatic_complexity: u32, l
 }
 
 /// Compute MI using per-function averages (fairer for well-factored code).
+#[must_use]
 #[inline]
 pub fn maintainability_index_from_averages(
     avg_loc_per_fn: f64,
@@ -68,89 +66,101 @@ pub fn maintainability_index_from_averages(
 
 /// Estimate Halstead volume from LOC (rough approximation).
 /// Real Halstead requires operator/operand counts which need tokenization.
+#[must_use]
 #[inline]
 pub fn estimate_halstead_volume(loc: u32) -> f64 {
     if loc == 0 {
-        1.0
-    } else {
-        loc as f64 * 3.0
+        return 1.0;
     }
+    loc as f64 * 3.0
 }
 
 /// Compute base cyclomatic complexity.
+#[must_use]
 #[inline]
 pub const fn base_complexity() -> u32 {
     1
 }
 
-level_enum!(MiLevel(u8),
+level_enum!(
+    MiLevel(u8),
     (85..=100, Excellent, "green"),
     (65..=84, Good, "green"),
     (50..=64, Moderate, "yellow"),
     (_, Poor, "red"),
 );
 
-level_enum!(CcLevel(u32),
+level_enum!(
+    CcLevel(u32),
     (0..=5, Simple, "green"),
     (6..=10, Moderate, "yellow"),
     (11..=20, Complex, "red"),
     (_, VeryComplex, "red"),
 );
 
-level_enum!(CognitiveLevel(u32),
+level_enum!(
+    CognitiveLevel(u32),
     (0..=8, Simple, "green"),
     (9..=15, Moderate, "yellow"),
     (_, Complex, "red"),
 );
 
-level_enum!(DepthLevel(u32),
+level_enum!(
+    DepthLevel(u32),
     (0..=2, Flat, "green"),
     (3..=4, Moderate, "yellow"),
     (5..=6, Deep, "red"),
     (_, VeryDeep, "red"),
 );
 
-/// Count lines in source bytes (fast).
+/// Count non-blank lines in source bytes.
+#[must_use]
 #[inline]
 pub fn count_lines(bytes: &[u8]) -> u32 {
-    bytes.iter().filter(|&&b| b == b'\n').count() as u32
+    bytes
+        .split(|&b| b == b'\n')
+        .filter(|line| line.iter().any(|&b| !b.is_ascii_whitespace()))
+        .count() as u32
 }
 
 /// Compute stability index (fan-out / (fan-in + fan-out)).
 /// Returns 0.0 for isolated modules, higher values indicate instability.
+#[must_use]
 #[inline]
 pub fn stability_index(fan_in: u32, fan_out: u32) -> f64 {
     let total = fan_in + fan_out;
     if total == 0 {
-        0.0
-    } else {
-        fan_out as f64 / total as f64
+        return 0.0;
     }
+    fan_out as f64 / total as f64
 }
 
 /// Compute complexity density (CC / LOC).
+#[must_use]
 #[inline]
 pub fn complexity_density(cc: u32, loc: u32) -> f64 {
     if loc == 0 {
-        0.0
-    } else {
-        cc as f64 / loc as f64
+        return 0.0;
     }
+    cc as f64 / loc as f64
 }
 
 /// Check if function is considered complex.
+#[must_use]
 #[inline]
 pub fn is_complex(cc: u32, loc: u32) -> bool {
     cc > 10 || (loc > 0 && complexity_density(cc, loc) > 0.3)
 }
 
 /// Check if function is considered large.
+#[must_use]
 #[inline]
 pub fn is_large(loc: u32) -> bool {
     loc > 50
 }
 
 /// Check if function is deeply nested.
+#[must_use]
 #[inline]
 pub fn is_deeply_nested(depth: u32) -> bool {
     depth > 3
@@ -201,8 +211,11 @@ mod tests {
     #[test]
     fn line_counting() {
         assert_eq!(count_lines(b"hello\nworld\n"), 2);
-        assert_eq!(count_lines(b"no newlines"), 0);
+        assert_eq!(count_lines(b"no newlines"), 1);
         assert_eq!(count_lines(b""), 0);
+        assert_eq!(count_lines(b"\n\n\n"), 0);
+        assert_eq!(count_lines(b"code\n\n\nmore code\n"), 2);
+        assert_eq!(count_lines(b"  \n\t\n  real\n"), 1);
     }
 
     #[test]

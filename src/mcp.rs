@@ -358,7 +358,7 @@ impl rmcp::handler::server::ServerHandler for MeteServer {
 fn call_analyze(params: AnalyzeParams) -> Result<CallToolResult, McpError> {
     let path = Path::new(&params.path);
     let pattern = params.pattern.as_deref().unwrap_or("**/*");
-    let lang = params.language.as_deref().and_then(Language::from_str);
+    let lang = params.language.as_deref().and_then(Language::from_name);
 
     let results = if path.is_file() {
         analyze_file(path, lang, true)
@@ -390,7 +390,7 @@ fn call_analyze(params: AnalyzeParams) -> Result<CallToolResult, McpError> {
 fn call_targets(params: TargetsParams) -> Result<CallToolResult, McpError> {
     let path = Path::new(&params.path);
     let pattern = params.pattern.as_deref().unwrap_or("**/*");
-    let lang = params.language.as_deref().and_then(Language::from_str);
+    let lang = params.language.as_deref().and_then(Language::from_name);
     let limit = params.limit.unwrap_or(20);
     let min_cc = params.min_cc.unwrap_or(5);
 
@@ -427,7 +427,7 @@ fn call_targets(params: TargetsParams) -> Result<CallToolResult, McpError> {
 fn call_functions(params: FunctionsParams) -> Result<CallToolResult, McpError> {
     let path = Path::new(&params.path);
     let pattern = params.pattern.as_deref().unwrap_or("**/*");
-    let lang = params.language.as_deref().and_then(Language::from_str);
+    let lang = params.language.as_deref().and_then(Language::from_name);
 
     let results = if path.is_file() {
         analyze_file(path, lang, true)
@@ -472,7 +472,7 @@ fn call_functions(params: FunctionsParams) -> Result<CallToolResult, McpError> {
 fn call_duplicates(params: DuplicatesParams) -> Result<CallToolResult, McpError> {
     let path = Path::new(&params.path);
     let pattern = params.pattern.as_deref().unwrap_or("**/*");
-    let lang = params.language.as_deref().and_then(Language::from_str);
+    let lang = params.language.as_deref().and_then(Language::from_name);
     let threshold = params.threshold.unwrap_or(0.8);
     let min_loc = params.min_loc.unwrap_or(5);
     let include_anonymous = params.include_anonymous.unwrap_or(false);
@@ -514,7 +514,7 @@ fn call_duplicates(params: DuplicatesParams) -> Result<CallToolResult, McpError>
 fn call_entropy(params: EntropyParams) -> Result<CallToolResult, McpError> {
     let path = Path::new(&params.path);
     let pattern = params.pattern.as_deref().unwrap_or("**/*");
-    let lang = params.language.as_deref().and_then(Language::from_str);
+    let lang = params.language.as_deref().and_then(Language::from_name);
 
     let results = if path.is_file() {
         analyze_file_entropy(path, lang)

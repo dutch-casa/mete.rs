@@ -62,14 +62,12 @@ impl Walker {
         let mut functions: Vec<FunctionData> = Vec::new();
         let mut function_stack: Vec<FunctionContext> = Vec::new();
 
-        // Count actual lines (excluding blanks, including comments)
         let loc = metrics::count_lines(source);
         state.loc = loc;
 
         let mut cursor = tree.walk();
         self.walk_iterative(&mut state, &mut functions, &mut function_stack, &mut cursor, source);
 
-        // Compute file-level metrics
         let (cc_max, cc_sum, cognitive_max, cognitive_sum) = if functions.is_empty() {
             (state.cc.max(1), state.cc.max(1), state.cognitive, state.cognitive)
         } else {
@@ -80,10 +78,8 @@ impl Walker {
             (cc_max, cc_sum, cognitive_max, cognitive_sum)
         };
 
-        // Count duplicates within file
         let dup_count = count_within_file_duplicates(&functions);
 
-        // Compute MI
         let mi = if functions.is_empty() {
             metrics::maintainability_index(
                 metrics::estimate_halstead_volume(loc),
@@ -127,18 +123,14 @@ impl Walker {
             let node = cursor.node();
             let kind = node.kind();
 
-            // Process node entry
             self.process_entry(state, functions, function_stack, &node, kind, source);
 
-            // Descend to first child
             if cursor.goto_first_child() {
                 continue;
             }
 
-            // Process node exit
             self.process_exit(state, functions, function_stack, &node, kind, source);
 
-            // Try siblings and parents
             loop {
                 if cursor.goto_next_sibling() {
                     break;
@@ -253,8 +245,12 @@ impl Walker {
                 }
             }
             BranchKind::BooleanAnd | BranchKind::BooleanOr => {
-                let is_and = matches!(branch_kind, BranchKind::BooleanAnd);
-                if state.record_bool_op(is_and) {
+                let op = if matches!(branch_kind, BranchKind::BooleanAnd) {
+                    crate::data::BoolOp::And
+                } else {
+                    crate::data::BoolOp::Or
+                };
+                if state.record_bool_op(op) {
                     state.cognitive += 1;
                     if state.in_function {
                         state.fn_cognitive += 1;
@@ -274,7 +270,6 @@ impl Walker {
         kind: &str,
         source: &[u8],
     ) {
-        // Block exit
         if self.spec.is_block(kind) {
             state.exit_block();
         }
@@ -287,7 +282,6 @@ impl Walker {
             }
         }
 
-        // Function end
         if self.spec.is_function(kind) {
             let name = self.extract_function_name(node, source);
             let end_line = node.end_position().row as u32 + 1;
@@ -402,7 +396,6 @@ fn count_within_file_duplicates(functions: &[FunctionData]) -> u32 {
         *fingerprint_counts.entry(f.fingerprint).or_insert(0) += 1;
     }
 
-    // Count how many are duplicates (count > 1)
     fingerprint_counts
         .values()
         .filter(|&&count| count > 1)

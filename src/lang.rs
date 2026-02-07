@@ -21,7 +21,7 @@ pub enum Language {
 
 impl Language {
     /// Parse language from string (case-insensitive).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_name(s: &str) -> Option<Self> {
         const ALIASES: &[(&str, Language)] = &[
             ("rust", Language::Rust),
             ("rs", Language::Rust),
@@ -61,7 +61,7 @@ impl Language {
     pub fn from_path(path: &Path) -> Option<Self> {
         path.extension()
             .and_then(|e| e.to_str())
-            .and_then(Self::from_str)
+            .and_then(Self::from_name)
     }
 
     /// Get tree-sitter language object.
@@ -107,6 +107,13 @@ impl Language {
             Language::Cpp => "cpp",
             Language::Elixir => "elixir",
         }
+    }
+}
+
+impl std::str::FromStr for Language {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_name(s).ok_or(())
     }
 }
 
@@ -201,8 +208,6 @@ impl LanguageSpec {
         }
     }
 
-    // Static language specs
-
     pub const RUST: Self = Self {
         function_nodes: &["function_item", "impl_item", "closure_expression"],
         branch_nodes: &[
@@ -215,7 +220,7 @@ impl LanguageSpec {
         block_nodes: &["block", "declaration_list"],
         import_nodes: &["use_declaration"],
         export_nodes: &["function_item", "struct_item", "enum_item", "trait_item"],
-        boolean_and_nodes: &["binary_expression"], // need to check operator
+        boolean_and_nodes: &["binary_expression"],
         boolean_or_nodes: &[],
         else_nodes: &["else_clause"],
     };
@@ -448,10 +453,10 @@ mod tests {
 
     #[test]
     fn language_from_str() {
-        assert_eq!(Language::from_str("rust"), Some(Language::Rust));
-        assert_eq!(Language::from_str("RS"), Some(Language::Rust));
-        assert_eq!(Language::from_str("TypeScript"), Some(Language::TypeScript));
-        assert_eq!(Language::from_str("unknown"), None);
+        assert_eq!(Language::from_name("rust"), Some(Language::Rust));
+        assert_eq!(Language::from_name("RS"), Some(Language::Rust));
+        assert_eq!(Language::from_name("TypeScript"), Some(Language::TypeScript));
+        assert_eq!(Language::from_name("unknown"), None);
     }
 
     #[test]

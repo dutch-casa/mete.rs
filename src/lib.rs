@@ -28,7 +28,6 @@ pub mod metrics;
 pub mod output;
 pub mod walk;
 
-// Re-exports for convenience
 pub use data::{FileResults, FunctionData, FunctionResults, SingleFileResult, StringInterner};
 pub use dup::{DuplicateGroup, DuplicateIndex, FunctionLocation};
 pub use lang::{BranchKind, Language, LanguageSpec};
@@ -113,11 +112,7 @@ const SKIP_DIRS: &[&str] = &[
 
 pub fn is_skippable(path: &Path) -> bool {
     path.components().any(|c| {
-        if let std::path::Component::Normal(s) = c {
-            SKIP_DIRS.iter().any(|skip| s == *skip)
-        } else {
-            false
-        }
+        matches!(c, std::path::Component::Normal(s) if SKIP_DIRS.iter().any(|skip| s == *skip))
     })
 }
 

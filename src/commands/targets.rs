@@ -1,12 +1,9 @@
 //! AI-friendly refactoring targets.
 
-use super::common::is_skippable;
+use super::common::{analyze_directory, analyze_file};
 use mete::data::SingleFileResult;
 use mete::lang::Language;
-use mete::walk::Walker;
-use rayon::prelude::*;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn run_targets(
     path: &str,
@@ -23,7 +20,7 @@ pub fn run_targets(
         std::process::exit(1);
     }
 
-    let lang = language.and_then(Language::from_str);
+    let lang = language.and_then(Language::from_name);
 
     let results = if path.is_file() {
         analyze_file(path, lang, quiet)
@@ -150,81 +147,4 @@ fn print_targets_json(targets: &[RefactorTarget]) {
         Ok(json) => println!("{}", json),
         Err(e) => eprintln!("JSON error: {}", e),
     }
-}
-
-fn analyze_file(path: &Path, language: Option<Language>, quiet: bool) -> Vec<SingleFileResult> {
-    let lang = language.or_else(|| Language::from_path(path));
-    let lang = match lang {
-        Some(l) => l,
-        None => {
-            if !quiet {
-                eprintln!("Unknown language for {}", path.display());
-            }
-            return Vec::new();
-        }
-    };
-
-    let source = match fs::read(path) {
-        Ok(s) => s,
-        Err(e) => {
-            if !quiet {
-                eprintln!("Error reading {}: {}", path.display(), e);
-            }
-            return Vec::new();
-        }
-    };
-
-    let mut walker = match Walker::new(lang) {
-        Ok(w) => w,
-        Err(e) => {
-            if !quiet {
-                eprintln!("Walker failed for {}: {}", path.display(), e);
-            }
-            return Vec::new();
-        }
-    };
-
-    match walker.analyze(path.to_path_buf(), &source) {
-        Ok(result) => vec![result],
-        Err(e) => {
-            if !quiet {
-                eprintln!("Analysis failed for {}: {}", path.display(), e);
-            }
-            Vec::new()
-        }
-    }
-}
-
-fn analyze_directory(
-    dir: &Path,
-    language: Option<Language>,
-    pattern: &str,
-    quiet: bool,
-) -> Vec<SingleFileResult> {
-    let glob_pattern = dir.join(pattern);
-    let pattern_str = glob_pattern.to_string_lossy().to_string();
-
-    let entries = match glob::glob(&pattern_str) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Invalid pattern: {}", e);
-            return Vec::new();
-        }
-    };
-
-    let file_paths: Vec<PathBuf> = entries
-        .filter_map(|entry| match entry {
-            Ok(path) if path.is_file() && !is_skippable(&path) => Some(path),
-            _ => None,
-        })
-        .collect();
-
-    if file_paths.is_empty() {
-        return Vec::new();
-    }
-
-    file_paths
-        .par_iter()
-        .filter_map(|path| analyze_file(path, language, quiet).into_iter().next())
-        .collect()
 }
